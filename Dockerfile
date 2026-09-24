@@ -21,7 +21,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV STORAGE_DIR=/app/storage
 ENV DATA_DIR=/app/data
-ENV CHROME_PATH=/usr/bin/chromium-browser
+ENV CHROME_PATH=/usr/lib/chromium/chromium
 ENV PGMEI_HEADLESS=true
 
 COPY package.json package-lock.json ./

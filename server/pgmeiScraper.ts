@@ -55,6 +55,8 @@ export function localizarChrome(): string | undefined {
   const candidatos = [
     process.env.CHROME_PATH,
     process.env.PUPPETEER_EXECUTABLE_PATH,
+    // No Alpine, /usr/bin/chromium-browser é um script que falha fora do shell; usa o binário direto.
+    '/usr/lib/chromium/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
     '/usr/bin/google-chrome',
