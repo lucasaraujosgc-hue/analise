@@ -1,0 +1,153 @@
+[
+  {
+    "cnpj": "34058193000153",
+    "razao_social": "34.058.193 ROBERIO DE ALMEIDA PEREIRA",
+    "nome_fantasia": "Não informado",
+    "situacao_cadastral": "ATIVA",
+    "data_situacao_cadastral": "2019-06-28",
+    "motivo_situacao_cadastral": "SEM MOTIVO",
+    "data_inicio_atividade": "2019-06-28",
+    "natureza_juridica": "Empresário (Individual)",
+    "porte": "MICRO EMPRESA",
+    "capital_social": 4000,
+    "email": "Não cadastrado",
+    "telefone": "Não cadastrado",
+    "endereco": {
+      "tipo_logradouro": "",
+      "logradouro": "",
+      "numero": "S/N",
+      "complemento": "",
+      "bairro": "CENTRO",
+      "cep": "44330000",
+      "municipio": "SAO GONCALO DOS CAMPOS",
+      "uf": "BA",
+      "endereco_completo": ", S/N, CENTRO - SAO GONCALO DOS CAMPOS/BA, CEP: 44330000"
+    },
+    "cnae_fiscal": {
+      "codigo": "4520001",
+      "descricao": "Serviços de manutenção e reparação mecânica de veículos automotores"
+    },
+    "cnaes_secundarios": [],
+    "qsa": [],
+    "opcao_pelo_simples": true,
+    "opcao_pelo_mei": true,
+    "source": "MinhaReceita (RFB)",
+    "lastUpdated": "2026-09-24T13:46:42.138Z",
+    "pendenciasResumo": {
+      "cndFederal": "NAO_CONSULTADA",
+      "cndEstadual": "NAO_CONSULTADA",
+      "totalDebitosMei": 547.74,
+      "guiasAtrasoMei": 6,
+      "ultimaConsulta": "2026-09-24T13:46:42.138Z"
+    }
+  },
+  {
+    "cnpj": "48912345000190",
+    "razao_social": "LUCAS CARVALHO SERVICOS DIGITAIS E CONSULTORIA MEI",
+    "nome_fantasia": "CARBONO TECH SOLUTIONS",
+    "situacao_cadastral": "ATIVA",
+    "porte": "MICRO EMPRESA",
+    "opcao_pelo_mei": true,
+    "opcao_pelo_simples": true,
+    "email": "lucas.carbonotech@gmail.com",
+    "telefone": "(11) 98765-4321",
+    "natureza_juridica": "213-5 - Empresário (Individual)",
+    "data_inicio_atividade": "2022-10-15",
+    "capital_social": 10000,
+    "cnae_fiscal": {
+      "codigo": "6202300",
+      "descricao": "Desenvolvimento e licenciamento de programas de computador customizáveis"
+    },
+    "cnaes_secundarios": [
+      {
+        "codigo": "6201501",
+        "descricao": "Desenvolvimento de programas de computador sob encomenda"
+      },
+      {
+        "codigo": "6209100",
+        "descricao": "Suporte técnico, manutenção e outros serviços em tecnologia da informação"
+      }
+    ],
+    "endereco": {
+      "logradouro": "Avenida Paulista",
+      "numero": "1374",
+      "complemento": "Andar 11 Sala 112",
+      "bairro": "Bela Vista",
+      "municipio": "São Paulo",
+      "uf": "SP",
+      "cep": "01310100",
+      "endereco_completo": "Avenida Paulista, 1374 - Andar 11 Sala 112, Bela Vista - São Paulo/SP, CEP: 01310100"
+    },
+    "qsa": [
+      {
+        "nome_socio": "LUCAS CARVALHO",
+        "qualificacao_socio": "Titular / Empresário Individual",
+        "faixa_etaria": "25 a 35 anos"
+      }
+    ],
+    "pendenciasResumo": {
+      "cndFederal": "NEGATIVA",
+      "cndEstadual": "NEGATIVA",
+      "totalDebitosMei": 341.25,
+      "guiasAtrasoMei": 4,
+      "ultimaConsulta": "2026-09-24T13:27:26.918Z"
+    },
+    "lastUpdated": "2026-09-24T13:27:26.918Z"
+  },
+  {
+    "cnpj": "18236120000158",
+    "razao_social": "NU PAGAMENTOS S.A. - INSTITUICAO DE PAGAMENTO",
+    "nome_fantasia": "NUBANK",
+    "situacao_cadastral": "ATIVA",
+    "porte": "DEMAIS",
+    "opcao_pelo_mei": false,
+    "opcao_pelo_simples": false,
+    "email": "regulamentar@nubank.com.br",
+    "telefone": "(11) 2222-2222",
+    "natureza_juridica": "205-4 - Sociedade Anônima Fechada",
+    "data_inicio_atividade": "2013-05-06",
+    "capital_social": 3500000000,
+    "cnae_fiscal": {
+      "codigo": "6499999",
+      "descricao": "Outras atividades de serviços financeiros não especificadas anteriormente"
+    },
+    "cnaes_secundarios": [
+      {
+        "codigo": "6619399",
+        "descricao": "Outras atividades auxiliares dos serviços financeiros"
+      },
+      {
+        "codigo": "6202300",
+        "descricao": "Desenvolvimento e licenciamento de programas customizáveis"
+      }
+    ],
+    "endereco": {
+      "logradouro": "Rua Capote Valente",
+      "numero": "39",
+      "complemento": "",
+      "bairro": "Pinheiros",
+      "municipio": "São Paulo",
+      "uf": "SP",
+      "cep": "05409000",
+      "endereco_completo": "Rua Capote Valente, 39, Pinheiros - São Paulo/SP, CEP: 05409000"
+    },
+    "qsa": [
+      {
+        "nome_socio": "DAVID VELEZ OSORNO",
+        "qualificacao_socio": "Diretor Presidente"
+      },
+      {
+        "nome_socio": "CRISTINA JUNQUEIRA",
+        "qualificacao_socio": "Diretor Executivo"
+      }
+    ],
+    "pendenciasResumo": {
+      "cndFederal": "NEGATIVA",
+      "cndEstadual": "NEGATIVA",
+      "totalDebitosMei": 0,
+      "guiasAtrasoMei": 0,
+      "ultimaConsulta": "2026-09-24T13:27:26.918Z"
+    },
+    "lastUpdated": "2026-09-24T13:27:26.918Z"
+  }
+]

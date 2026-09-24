@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  auditacnpj:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carbono_auditacnpj
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - STORAGE_DIR=/app/storage
+      - DATA_DIR=/app/data
+    volumes:
+      # Montagem para salvar todos os PDFs baixados, CNDs e Guias DAS diretamente no seu computador
+      - ./storage:/app/storage
+      # Montagem para persistir a base de dados da carteira Multi-CNPJ
+      - ./data:/app/data

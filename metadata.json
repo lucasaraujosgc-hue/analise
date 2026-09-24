@@ -1,0 +1,6 @@
+{
+  "name": "AuditaCNPJ - Análise Cadastral, CNDs & MEI RPA",
+  "description": "Plataforma avançada de análise de empresas por CNPJ com consulta de CNAEs, QSA, CNDs Federal e Estadual, automação RPA/Selenium e diagnóstico PGMEI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
