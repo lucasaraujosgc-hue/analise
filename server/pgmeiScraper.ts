@@ -7,7 +7,7 @@
 // cada ano-calendário (situação, principal, multa, juros, total e vencimento) e
 // os avisos de DASN-SIMEI não entregue.
 
-import fs from 'fs';
+import { abrirNavegador, abrirUrl, localizarChrome, TIMEOUT_NAV } from './navegador';
 import {
   CompetenciaMei,
   anosDasnExigiveis,
@@ -25,7 +25,7 @@ export const RECEITA_BASE_URL = 'https://www8.receita.fazenda.gov.br';
 export const PGMEI_URL = `${RECEITA_BASE_URL}${PGMEI_PATH}/Identificacao`;
 export const DASN_SIMEI_URL = `${RECEITA_BASE_URL}${DASN_PATH}/Identificacao`;
 
-const TIMEOUT_NAV = 40_000;
+export { localizarChrome };
 const TIMEOUT_SEL = 20_000;
 
 export interface OpcoesConsultaPgmei {
@@ -51,28 +51,6 @@ export class PgmeiBloqueadoError extends Error {
   }
 }
 
-export function localizarChrome(): string | undefined {
-  const candidatos = [
-    process.env.CHROME_PATH,
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    // No Alpine, /usr/bin/chromium-browser é um script que falha fora do shell; usa o binário direto.
-    '/usr/lib/chromium/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  ];
-  const pwDir = '/opt/pw-browsers';
-  if (fs.existsSync(pwDir)) {
-    for (const d of fs.readdirSync(pwDir)) {
-      if (d.startsWith('chromium-')) candidatos.push(`${pwDir}/${d}/chrome-linux/chrome`);
-    }
-  }
-  return candidatos.find(p => p && fs.existsSync(p));
-}
 
 const esperar = (ms: number) => new Promise(r => setTimeout(r, ms));
 const atrasoAleatorio = (min = 300, max = 900) => esperar(Math.floor(Math.random() * (max - min + 1)) + min);
@@ -129,14 +107,14 @@ async function aguardarSaidaDaIdentificacao(page: any, prazoMs: number): Promise
 }
 
 async function identificar(page: any, url: string, cnpj: string, opcoes: OpcoesConsultaPgmei) {
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: TIMEOUT_NAV });
+  await abrirUrl(page, url);
   await atrasoAleatorio(1200, 2200);
   await page.waitForSelector('input[id=cnpj]', { timeout: TIMEOUT_SEL, visible: true });
   await digitarHumano(page, 'input[id=cnpj]', cnpj);
   await cliqueHumano(page, 'button[type=submit]');
 
   await Promise.race([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15_000 }),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }),
     page.waitForSelector('#toast-container .toast-message, .alert', { timeout: 15_000, visible: true }),
   ]).catch(() => {});
 
@@ -189,8 +167,8 @@ export function linhasParaCompetencias(linhas: LinhaTabela[], hoje = new Date())
   return parseExtratoPgmei(texto, hoje).competencias;
 }
 
-async function verificarDasnSimei(browser: any, opcoes: OpcoesConsultaPgmei, base: string): Promise<number[]> {
-  const page = await browser.newPage();
+async function verificarDasnSimei(browser: any, prepararPagina: (p: any) => Promise<any>, opcoes: OpcoesConsultaPgmei, base: string): Promise<number[]> {
+  const page = await prepararPagina(await browser.newPage());
   try {
     await identificar(page, `${base}${DASN_PATH}/Identificacao`, opcoes.cnpj, opcoes);
     const textos: string[] = [await page.evaluate(() => document.body.innerText)];
@@ -200,7 +178,7 @@ async function verificarDasnSimei(browser: any, opcoes: OpcoesConsultaPgmei, bas
       return alvo ? (alvo as HTMLAnchorElement).href : null;
     });
     if (link) {
-      await page.goto(link, { waitUntil: 'networkidle2', timeout: TIMEOUT_NAV });
+      await abrirUrl(page, link);
       textos.push(
         await page.evaluate(() =>
           Array.from(document.querySelectorAll('table tr'))
@@ -221,30 +199,7 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
   const progresso = opcoes.onProgresso || (() => {});
   const headless = opcoes.headless ?? true;
 
-  const chromePath = opcoes.chromePath || localizarChrome();
-  if (!chromePath) {
-    throw new Error('Chrome/Chromium não encontrado. Instale o Chromium ou defina CHROME_PATH com o caminho do executável.');
-  }
-
-  // Correção do rebrowser contra detecção de automação (igual ao projeto de referência).
-  process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ??= 'addBinding';
-  const { default: puppeteer } = await import('rebrowser-puppeteer-core');
-
-  const browser = await puppeteer.launch({
-    headless,
-    executablePath: chromePath,
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--lang=pt-BR,pt',
-      '--window-size=1366,768',
-    ],
-    defaultViewport: { width: 1366, height: 768 },
-  });
+  const { browser, prepararPagina } = await abrirNavegador({ headless, chromePath: opcoes.chromePath });
 
   const avisos: string[] = [];
   const mensagensPortal: string[] = [];
@@ -252,8 +207,7 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
   let entregues: number[] = [];
 
   try {
-    const [page] = await browser.pages();
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7' });
+    const page = await prepararPagina((await browser.pages())[0]);
 
     progresso('Acessando o PGMEI e informando o CNPJ...', 0, 0);
     await identificar(page, `${base}${PGMEI_PATH}/Identificacao`, opcoes.cnpj, opcoes);
@@ -262,7 +216,7 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
     await atrasoAleatorio(500, 1000);
     await page.waitForSelector(`a[href="${PGMEI_PATH}/emissao"]`, { timeout: TIMEOUT_SEL });
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: TIMEOUT_NAV }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_NAV }).catch(() => {}),
       page.click(`a[href="${PGMEI_PATH}/emissao"]`),
     ]);
     await page.waitForSelector('#anoCalendarioSelect', { timeout: TIMEOUT_SEL, visible: true });
@@ -284,13 +238,13 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
       if (i > 0) {
         // Volta para a seleção de ano (a página pode ter mudado após o envio).
         if (!(await page.$('#anoCalendarioSelect'))) {
-          await page.goto(`${base}${PGMEI_PATH}/emissao`, { waitUntil: 'networkidle2', timeout: TIMEOUT_NAV });
+          await abrirUrl(page, `${base}${PGMEI_PATH}/emissao`);
         }
         await atrasoAleatorio(600, 1400);
       }
       await page.select('#anoCalendarioSelect', ano);
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15_000 }).catch(() => {}),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {}),
         page.click('button[type=submit]'),
       ]);
 
@@ -304,7 +258,7 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
     if (opcoes.verificarDasn !== false) {
       progresso('Verificando declarações no DASN-SIMEI...', anos.length, anos.length);
       try {
-        entregues = await verificarDasnSimei(browser, opcoes, base);
+        entregues = await verificarDasnSimei(browser, prepararPagina, opcoes, base);
         if (entregues.length === 0) {
           avisos.push('Não foi possível ler as declarações entregues no DASN-SIMEI; os anos sem aviso do PGMEI ficam como "não verificada".');
         }

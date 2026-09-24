@@ -178,6 +178,8 @@ export interface JobMei {
 
 export interface StatusSistema {
   robo_pgmei: { disponivel: boolean; headless: boolean };
+  robo_cnd?: { disponivel: boolean };
+  proxy_receita?: boolean;
   cnd_federal_url: string;
 }
 

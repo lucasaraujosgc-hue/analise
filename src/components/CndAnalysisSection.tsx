@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { EmpresaData, CNDAnalysisResult, TipoCertidao, StatusCnd } from '../types/cnpj';
-import { analyzeCndPdf, updatePendenciasInCarteira } from '../services/api';
+import { analyzeCndPdf, fetchJob, iniciarEmissaoCndFederal, updatePendenciasInCarteira } from '../services/api';
 import { SAMPLE_CND_TEXTS } from '../data/mockCompanies';
 import { CND_ESTADUAL, CND_FEDERAL, OUTRAS_CERTIDOES } from '../data/cndLinks';
 import { formatCNPJ } from '../utils/formatters';
 import {
   FileText, CheckCircle, AlertTriangle, XCircle, Loader2, Calendar, Key, HelpCircle,
-  FileCheck, Terminal, ExternalLink, Copy, Check, ChevronDown,
+  FileCheck, Terminal, ExternalLink, Copy, Check, ChevronDown, Server,
 } from 'lucide-react';
 
 interface CndAnalysisSectionProps {
@@ -34,6 +34,7 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
   const [mostrarColar, setMostrarColar] = useState(false);
   const [mostrarExemplos, setMostrarExemplos] = useState(false);
   const [copiado, setCopiado] = useState(false);
+  const [roboEtapa, setRoboEtapa] = useState<string | null>(null);
 
   const uf = empresa.endereco.uf;
   const estadual = uf ? CND_ESTADUAL[uf] : undefined;
@@ -73,6 +74,33 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
       setErro(err.message || 'Erro ao analisar a certidão.');
     } finally {
       setAnalisando(false);
+    }
+  };
+
+  // Robô no servidor: abre o portal da Receita, informa o CNPJ e captura o PDF.
+  const buscarNoServidor = async () => {
+    setErro(null);
+    setRoboEtapa('Iniciando o robô...');
+    try {
+      const jobId = await iniciarEmissaoCndFederal(empresa.cnpj);
+      for (;;) {
+        await new Promise(r => setTimeout(r, 2000));
+        const job = await fetchJob<CNDAnalysisResult>(jobId);
+        if (job.status === 'concluido' && job.resultado) {
+          setResultado({ esfera: 'federal', dados: job.resultado, exemplo: false });
+          onRefreshPortfolioSummary?.();
+          break;
+        }
+        if (job.status === 'erro') {
+          setErro(job.erro || 'O robô não conseguiu emitir a certidão.');
+          break;
+        }
+        setRoboEtapa(job.status === 'na_fila' ? 'Na fila (um robô por vez)...' : job.etapa);
+      }
+    } catch (err: any) {
+      setErro(err.message);
+    } finally {
+      setRoboEtapa(null);
     }
   };
 
@@ -176,6 +204,17 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
             <li>Conclua a verificação de segurança e emita a certidão.</li>
             <li>Envie o PDF baixado ao lado.</li>
           </ol>
+
+          {esfera === 'federal' && (
+            <button
+              onClick={buscarNoServidor}
+              disabled={Boolean(roboEtapa)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-accent hover:bg-accent-600 text-accent-foreground text-xs font-semibold transition disabled:opacity-60 cursor-pointer"
+            >
+              {roboEtapa ? <Loader2 className="w-4 h-4 animate-spin" /> : <Server className="w-4 h-4" />}
+              {roboEtapa || 'Buscar CND automaticamente (robô no servidor)'}
+            </button>
+          )}
 
           {esfera === 'federal' && (
             <button

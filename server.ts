@@ -19,6 +19,8 @@ import {
   SituacaoDeclaracao,
 } from './server/mei';
 import { consultarPgmei, localizarChrome, PgmeiBloqueadoError } from './server/pgmeiScraper';
+import { emitirCndFederal, CndBloqueadaError } from './server/cndScraper';
+import { proxyConfigurado, SiteInacessivelError } from './server/navegador';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -289,6 +291,39 @@ app.get('/api/storage/download/:subfolder/:filename', (req, res) => {
 // ==========================================
 // 4. CND — leitura e classificação do PDF
 // ==========================================
+async function textoDoPdf(buffer: Buffer): Promise<string> {
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  try {
+    return (await parser.getText()).text || '';
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
+}
+
+function salvarPdfCnd(buffer: Buffer, cnpj: string, esfera?: string) {
+  try {
+    const nome = `CND_${String(esfera || 'CND').toUpperCase()}_${sanitizeCnpj(cnpj)}_${Date.now()}.pdf`;
+    fs.writeFileSync(path.join(STORAGE_DIR, 'cnds', path.basename(nome)), buffer);
+    return nome;
+  } catch (e) {
+    console.warn('Não foi possível salvar o PDF da CND:', e);
+    return undefined;
+  }
+}
+
+function registrarCndNaCarteira(cnpj: string, esfera: 'federal' | 'estadual', tipo: string, validade: string | null) {
+  const empresa = findEmpresa(cnpj);
+  if (!empresa) return;
+  empresa.pendenciasResumo = {
+    ...empresa.pendenciasResumo,
+    ...(esfera === 'federal'
+      ? { cndFederal: tipo, cndFederalValidade: validade || undefined }
+      : { cndEstadual: tipo, cndEstadualValidade: validade || undefined }),
+    ultimaConsulta: new Date().toISOString(),
+  };
+  saveCarteira(carteiraCache);
+}
+
 app.post('/api/cnd/analyze-pdf', async (req, res) => {
   try {
     const { pdfBase64, rawText, fileName, cnpj, esfera } = req.body;
@@ -296,21 +331,8 @@ app.post('/api/cnd/analyze-pdf', async (req, res) => {
 
     if (pdfBase64) {
       const buffer = Buffer.from(String(pdfBase64).replace(/^data:[^;]+;base64,/, ''), 'base64');
-      const parser = new PDFParse({ data: new Uint8Array(buffer) });
-      try {
-        extractedText = (await parser.getText()).text || '';
-      } finally {
-        await parser.destroy().catch(() => {});
-      }
-
-      if (cnpj) {
-        try {
-          const nome = `CND_${String(esfera || 'CND').toUpperCase()}_${sanitizeCnpj(cnpj)}_${Date.now()}.pdf`;
-          fs.writeFileSync(path.join(STORAGE_DIR, 'cnds', path.basename(nome)), buffer);
-        } catch (e) {
-          console.warn('Não foi possível salvar o PDF da CND:', e);
-        }
-      }
+      extractedText = await textoDoPdf(buffer);
+      if (cnpj) salvarPdfCnd(buffer, cnpj, esfera);
     } else if (rawText) {
       extractedText = String(rawText);
     } else {
@@ -334,6 +356,34 @@ app.post('/api/cnd/analyze-pdf', async (req, res) => {
     console.error('Erro ao analisar PDF de CND:', error);
     return res.status(500).json({ error: 'Falha ao processar arquivo PDF: ' + error.message });
   }
+});
+
+// Emissão da CND federal pelo robô no servidor (em segundo plano).
+app.post('/api/cnd/:cnpj/emitir', (req, res) => {
+  const cnpj = sanitizeCnpj(req.params.cnpj);
+  if (!isValidCnpj(cnpj)) return res.status(400).json({ error: 'CNPJ inválido.' });
+
+  const job = criarJob('cnd', cnpj, async job => {
+    const robo = await emitirCndFederal({
+      cnpj,
+      url: process.env.CND_FEDERAL_URL_TESTE,
+      headless: process.env.PGMEI_HEADLESS !== 'false',
+      onProgresso: etapa => Object.assign(job, { etapa }),
+    });
+    const texto = robo.pdf ? await textoDoPdf(robo.pdf) : robo.textoPagina || '';
+    const fileName = robo.pdf ? salvarPdfCnd(robo.pdf, cnpj, 'federal') : 'resposta-do-portal.txt';
+    const classification = classifyCndText(texto, { cnpj });
+    registrarCndNaCarteira(cnpj, 'federal', classification.tipo, classification.validade);
+    return {
+      success: true,
+      fileName: fileName || 'certidao.pdf',
+      extractedTextLength: texto.length,
+      sampleText: texto.slice(0, 1500),
+      classification,
+    };
+  });
+
+  return res.json({ jobId: job.id });
 });
 
 // ==========================================
@@ -378,27 +428,54 @@ function recalcular(resultado: ResultadoMei): ResultadoMei {
   return resultado;
 }
 
-interface JobMei {
+interface JobRobo {
   id: string;
+  tipo: 'mei' | 'cnd';
   cnpj: string;
   status: 'na_fila' | 'executando' | 'concluido' | 'erro';
   etapa: string;
   atual: number;
   total: number;
   criadoEm: number;
-  resultado?: ResultadoMei;
+  resultado?: any;
   erro?: string;
   bloqueado?: boolean;
 }
 
-const jobsMei = new Map<string, JobMei>();
-// Uma consulta por vez: evita abrir vários navegadores e não sobrecarrega o portal.
-let filaMei: Promise<void> = Promise.resolve();
+const jobs = new Map<string, JobRobo>();
+// Um robô por vez: evita abrir vários navegadores e não sobrecarrega os portais.
+let filaRobos: Promise<void> = Promise.resolve();
+
+function criarJob(tipo: JobRobo['tipo'], cnpj: string, executar: (job: JobRobo) => Promise<any>): JobRobo {
+  const emAndamento = Array.from(jobs.values()).find(
+    j => j.tipo === tipo && j.cnpj === cnpj && (j.status === 'na_fila' || j.status === 'executando'),
+  );
+  if (emAndamento) return emAndamento;
+
+  limparJobsAntigos();
+  const job: JobRobo = { id: randomUUID(), tipo, cnpj, status: 'na_fila', etapa: 'Aguardando na fila...', atual: 0, total: 0, criadoEm: Date.now() };
+  jobs.set(job.id, job);
+  filaRobos = filaRobos.then(async () => {
+    job.status = 'executando';
+    try {
+      const resultado = await executar(job);
+      Object.assign(job, { status: 'concluido', etapa: 'Concluído.', resultado });
+    } catch (err: any) {
+      console.error(`[${tipo.toUpperCase()}] Falha:`, err);
+      Object.assign(job, {
+        status: 'erro',
+        erro: err?.message || 'Falha inesperada no robô.',
+        bloqueado: err instanceof PgmeiBloqueadoError || err instanceof CndBloqueadaError || err instanceof SiteInacessivelError,
+      });
+    }
+  });
+  return job;
+}
 
 function limparJobsAntigos() {
   const limite = Date.now() - 60 * 60 * 1000;
-  for (const [id, job] of jobsMei) {
-    if (job.criadoEm < limite && (job.status === 'concluido' || job.status === 'erro')) jobsMei.delete(id);
+  for (const [id, job] of jobs) {
+    if (job.criadoEm < limite && (job.status === 'concluido' || job.status === 'erro')) jobs.delete(id);
   }
 }
 
@@ -408,12 +485,14 @@ app.get('/api/status', (req, res) => {
       disponivel: Boolean(localizarChrome()),
       headless: process.env.PGMEI_HEADLESS !== 'false',
     },
+    robo_cnd: { disponivel: Boolean(localizarChrome()) },
+    proxy_receita: Boolean(proxyConfigurado()),
     cnd_federal_url: CND_FEDERAL_URL,
   });
 });
 
-app.get('/api/mei/jobs/:id', (req, res) => {
-  const job = jobsMei.get(req.params.id);
+app.get(['/api/jobs/:id', '/api/mei/jobs/:id'], (req, res) => {
+  const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Consulta não encontrada (pode ter expirado).' });
   return res.json(job);
 });
@@ -428,48 +507,31 @@ app.post('/api/mei/:cnpj/consultar', async (req, res) => {
   const cnpj = sanitizeCnpj(req.params.cnpj);
   if (!isValidCnpj(cnpj)) return res.status(400).json({ error: 'CNPJ inválido.' });
 
-  const emAndamento = Array.from(jobsMei.values()).find(j => j.cnpj === cnpj && (j.status === 'na_fila' || j.status === 'executando'));
-  if (emAndamento) return res.json({ jobId: emAndamento.id, jaEmAndamento: true });
-
-  limparJobsAntigos();
   const empresa = findEmpresa(cnpj);
-  const job: JobMei = { id: randomUUID(), cnpj, status: 'na_fila', etapa: 'Aguardando na fila...', atual: 0, total: 0, criadoEm: Date.now() };
-  jobsMei.set(job.id, job);
-
   const maxAnos = Math.min(Math.max(Number(req.body?.maxAnos) || 6, 1), 10);
   const verificarDasn = req.body?.verificarDasn !== false;
-  filaMei = filaMei.then(async () => {
-    job.status = 'executando';
-    try {
-      const resultado = await consultarPgmei({
-        cnpj,
-        ...datasMei(empresa),
-        maxAnos,
-        verificarDasn,
-        headless: process.env.PGMEI_HEADLESS !== 'false',
-        baseUrl: process.env.PGMEI_BASE_URL,
-        onProgresso: (etapa, atual, total) => Object.assign(job, { etapa, atual, total }),
-      });
 
-      // Mantém a situação de declarações marcadas manualmente quando o robô não conseguiu verificar.
-      const anterior = lerResultadoMei(cnpj);
-      if (anterior) {
-        resultado.declaracoes = resultado.declaracoes.map(d => {
-          const manual = anterior.declaracoes.find(a => a.ano === d.ano && a.fonte === 'Manual');
-          return d.situacao === 'NAO_VERIFICADA' && manual ? manual : d;
-        });
-      }
+  const job = criarJob('mei', cnpj, async job => {
+    const resultado = await consultarPgmei({
+      cnpj,
+      ...datasMei(empresa),
+      maxAnos,
+      verificarDasn,
+      headless: process.env.PGMEI_HEADLESS !== 'false',
+      baseUrl: process.env.PGMEI_BASE_URL,
+      onProgresso: (etapa, atual, total) => Object.assign(job, { etapa, atual, total }),
+    });
 
-      salvarResultadoMei(recalcular(resultado));
-      Object.assign(job, { status: 'concluido', etapa: 'Consulta concluída.', resultado });
-    } catch (err: any) {
-      console.error('[PGMEI] Falha na consulta:', err);
-      Object.assign(job, {
-        status: 'erro',
-        erro: err?.message || 'Falha inesperada na consulta ao PGMEI.',
-        bloqueado: err instanceof PgmeiBloqueadoError,
+    // Mantém a situação de declarações marcadas manualmente quando o robô não conseguiu verificar.
+    const anterior = lerResultadoMei(cnpj);
+    if (anterior) {
+      resultado.declaracoes = resultado.declaracoes.map(d => {
+        const manual = anterior.declaracoes.find(a => a.ano === d.ano && a.fonte === 'Manual');
+        return d.situacao === 'NAO_VERIFICADA' && manual ? manual : d;
       });
     }
+    salvarResultadoMei(recalcular(resultado));
+    return resultado;
   });
 
   return res.json({ jobId: job.id });

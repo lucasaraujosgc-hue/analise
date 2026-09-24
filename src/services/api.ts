@@ -114,6 +114,18 @@ export async function analyzeCndPdf(options: {
   return response.json();
 }
 
+export async function iniciarEmissaoCndFederal(cnpj: string): Promise<string> {
+  const res = await fetch(`/api/cnd/${cleanCNPJ(cnpj)}/emitir`, { method: 'POST' });
+  if (!res.ok) throw await lerErro(res, 'Falha ao iniciar a emissão da CND');
+  return (await res.json()).jobId;
+}
+
+export async function fetchJob<T>(jobId: string): Promise<{ status: string; etapa: string; resultado?: T; erro?: string; bloqueado?: boolean }> {
+  const res = await fetch(`/api/jobs/${jobId}`);
+  if (!res.ok) throw await lerErro(res, 'Falha ao acompanhar o robô');
+  return res.json();
+}
+
 // MEI
 export async function fetchResultadoMei(cnpj: string): Promise<ResultadoMei | null> {
   const res = await fetch(`/api/mei/${cleanCNPJ(cnpj)}`);
@@ -133,7 +145,7 @@ export async function iniciarConsultaMei(cnpj: string, opcoes: { maxAnos?: numbe
 }
 
 export async function fetchJobMei(jobId: string): Promise<JobMei> {
-  const res = await fetch(`/api/mei/jobs/${jobId}`);
+  const res = await fetch(`/api/jobs/${jobId}`);
   if (!res.ok) throw await lerErro(res, 'Falha ao acompanhar a consulta');
   return res.json();
 }
