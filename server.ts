@@ -367,7 +367,6 @@ app.post('/api/cnd/:cnpj/emitir', (req, res) => {
     const robo = await emitirCndFederal({
       cnpj,
       url: process.env.CND_FEDERAL_URL_TESTE,
-      headless: process.env.PGMEI_HEADLESS !== 'false',
       onProgresso: etapa => Object.assign(job, { etapa }),
     });
     const texto = robo.pdf ? await textoDoPdf(robo.pdf) : robo.textoPagina || '';
@@ -483,7 +482,7 @@ app.get('/api/status', (req, res) => {
   return res.json({
     robo_pgmei: {
       disponivel: Boolean(localizarChrome()),
-      headless: process.env.PGMEI_HEADLESS !== 'false',
+      headless: process.env.PGMEI_HEADLESS === 'true',
     },
     robo_cnd: { disponivel: Boolean(localizarChrome()) },
     proxy_receita: Boolean(proxyConfigurado()),
@@ -517,7 +516,6 @@ app.post('/api/mei/:cnpj/consultar', async (req, res) => {
       ...datasMei(empresa),
       maxAnos,
       verificarDasn,
-      headless: process.env.PGMEI_HEADLESS !== 'false',
       baseUrl: process.env.PGMEI_BASE_URL,
       onProgresso: (etapa, atual, total) => Object.assign(job, { etapa, atual, total }),
     });

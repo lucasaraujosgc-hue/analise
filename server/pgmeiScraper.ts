@@ -7,6 +7,8 @@
 // cada ano-calendário (situação, principal, multa, juros, total e vencimento) e
 // os avisos de DASN-SIMEI não entregue.
 
+import fs from 'fs';
+import path from 'path';
 import { abrirNavegador, abrirUrl, localizarChrome, TIMEOUT_NAV } from './navegador';
 import {
   CompetenciaMei,
@@ -36,6 +38,7 @@ export interface OpcoesConsultaPgmei {
   maxAnos?: number;
   verificarDasn?: boolean;
   headless?: boolean;
+  telaVirtual?: boolean;
   // Com navegador visível, tempo para a pessoa resolver o captcha, se aparecer.
   esperaCaptchaMs?: number;
   baseUrl?: string;
@@ -97,6 +100,19 @@ async function lerMensagens(page: any): Promise<string[]> {
     .catch(() => []);
 }
 
+// Guarda um print da tela no storage para entender por que o portal barrou.
+export async function salvarPrintDiagnostico(page: any, prefixo: string): Promise<string | null> {
+  try {
+    const dir = path.join(process.env.STORAGE_DIR || path.resolve('storage'), 'relatorios');
+    fs.mkdirSync(dir, { recursive: true });
+    const nome = `DIAGNOSTICO_${prefixo}_${Date.now()}.png`;
+    await page.screenshot({ path: path.join(dir, nome), fullPage: true });
+    return nome;
+  } catch {
+    return null;
+  }
+}
+
 async function aguardarSaidaDaIdentificacao(page: any, prazoMs: number): Promise<boolean> {
   const limite = Date.now() + prazoMs;
   while (Date.now() < limite) {
@@ -121,17 +137,26 @@ async function identificar(page: any, url: string, cnpj: string, opcoes: OpcoesC
   if (!/identificacao/i.test(page.url())) return;
 
   const mensagens = await lerMensagens(page);
-  // Navegador visível: dá tempo para a pessoa resolver o captcha e clicar em Continuar.
+  // Janela visível: dá tempo para a pessoa resolver o captcha. Em tela virtual
+  // ninguém vê a janela, então só espera a verificação invisível terminar.
   if (opcoes.headless === false) {
-    opcoes.onProgresso?.('Aguardando a verificação de segurança (resolva o captcha no navegador aberto)...', 0, 0);
-    if (await aguardarSaidaDaIdentificacao(page, opcoes.esperaCaptchaMs ?? 180_000)) {
+    opcoes.onProgresso?.(
+      opcoes.telaVirtual ? 'Aguardando a verificação de segurança do portal...' : 'Resolva o captcha no navegador aberto...',
+      0,
+      0,
+    );
+    const prazo = opcoes.telaVirtual ? 25_000 : opcoes.esperaCaptchaMs ?? 180_000;
+    // Reenvia uma vez: o captcha invisível às vezes só libera na segunda tentativa.
+    if (opcoes.telaVirtual) await cliqueHumano(page, 'button[type=submit]').catch(() => {});
+    if (await aguardarSaidaDaIdentificacao(page, prazo)) {
       await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
       return;
     }
   }
   const detalhe = mensagens.join(' ') || 'o portal não saiu da tela de identificação';
+  const print = await salvarPrintDiagnostico(page, 'pgmei');
   throw new PgmeiBloqueadoError(
-    `A Receita bloqueou a consulta automática (${detalhe}). Tente de novo em alguns minutos, rode com PGMEI_HEADLESS=false para resolver o captcha manualmente, ou cole a tabela do PGMEI em "Importar extrato".`,
+    `A verificação anti-robô da Receita barrou a consulta (${detalhe}).${print ? ` Print da tela salvo em Arquivos: ${print}.` : ''} Tente de novo em alguns minutos ou cole a tabela do PGMEI em "Importar extrato".`,
   );
 }
 
@@ -197,9 +222,9 @@ export async function consultarPgmei(opcoes: OpcoesConsultaPgmei): Promise<Resul
   const base = opcoes.baseUrl || RECEITA_BASE_URL;
   const hoje = opcoes.hoje || new Date();
   const progresso = opcoes.onProgresso || (() => {});
-  const headless = opcoes.headless ?? true;
 
-  const { browser, prepararPagina } = await abrirNavegador({ headless, chromePath: opcoes.chromePath });
+  const { browser, prepararPagina, headless, telaVirtual } = await abrirNavegador({ headless: opcoes.headless, chromePath: opcoes.chromePath });
+  opcoes = { ...opcoes, headless, telaVirtual };
 
   const avisos: string[] = [];
   const mensagensPortal: string[] = [];

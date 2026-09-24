@@ -10,6 +10,7 @@ import os from 'os';
 import path from 'path';
 import { abrirNavegador, abrirUrl } from './navegador';
 import { CND_FEDERAL_URL } from './cnd';
+import { salvarPrintDiagnostico } from './pgmeiScraper';
 
 export class CndBloqueadaError extends Error {
   constructor(message: string) {
@@ -67,7 +68,7 @@ export async function emitirCndFederal(opcoes: {
 }): Promise<ResultadoRoboCnd> {
   const progresso = opcoes.onProgresso || (() => {});
   const pastaDownload = fs.mkdtempSync(path.join(os.tmpdir(), 'cnd-'));
-  const { browser, prepararPagina } = await abrirNavegador({ headless: opcoes.headless ?? true });
+  const { browser, prepararPagina } = await abrirNavegador({ headless: opcoes.headless });
 
   let pdf: Buffer | undefined;
   let urlPdf: string | undefined;
@@ -83,8 +84,9 @@ export async function emitirCndFederal(opcoes: {
     }
   };
 
+  let page: any;
   try {
-    const page = await prepararPagina((await browser.pages())[0]);
+    page = await prepararPagina((await browser.pages())[0]);
     page.on('response', capturarResposta);
     const cdp = await browser.target().createCDPSession();
     await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: pastaDownload });
@@ -165,6 +167,12 @@ export async function emitirCndFederal(opcoes: {
       throw new CndBloqueadaError('O portal não entregou o PDF da certidão no tempo esperado. Emita pelo link oficial e envie o PDF.');
     }
     return { pdf };
+  } catch (err) {
+    if (err instanceof CndBloqueadaError && page) {
+      const print = await salvarPrintDiagnostico(page, 'cnd');
+      if (print) err.message += ` Print da tela salvo em Arquivos: ${print}.`;
+    }
+    throw err;
   } finally {
     await browser.close().catch(() => {});
     fs.rmSync(pastaDownload, { recursive: true, force: true });

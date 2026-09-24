@@ -16,7 +16,7 @@ services:
       - PORT=3000
       - STORAGE_DIR=/app/storage
       - DATA_DIR=/app/data
-      - PGMEI_HEADLESS=true
+      - PGMEI_HEADLESS=false
     volumes:
       # PDFs de CND, relatórios do MEI e dossiês ficam no seu computador
       - ./storage:/app/storage

@@ -1,6 +1,7 @@
 // Navegador compartilhado pelos robôs (PGMEI e CND) que rodam no servidor.
 
 import fs from 'fs';
+import { spawn } from 'child_process';
 
 export const TIMEOUT_NAV = 60_000;
 
@@ -51,6 +52,35 @@ export function proxyConfigurado(): { servidor: string; usuario?: string; senha?
   }
 }
 
+// Em servidor sem monitor (VPS/Docker), o Chrome "com janela" roda numa tela
+// virtual (Xvfb). É bem menos detectado pela verificação anti-robô da Receita do
+// que o modo headless.
+let telaVirtual: Promise<boolean> | null = null;
+
+function localizarXvfb(): string | undefined {
+  return ['/usr/bin/Xvfb', '/usr/local/bin/Xvfb'].find(p => fs.existsSync(p));
+}
+
+async function garantirTela(): Promise<{ ok: boolean; virtual: boolean }> {
+  if (process.platform !== 'linux' || process.env.DISPLAY) return { ok: true, virtual: false };
+  const xvfb = localizarXvfb();
+  if (!xvfb) return { ok: false, virtual: false };
+  telaVirtual ??= new Promise(resolve => {
+    const display = ':99';
+    const proc = spawn(xvfb, [display, '-screen', '0', '1366x768x24', '-nolisten', 'tcp', '-ac'], { stdio: 'ignore', detached: true });
+    proc.on('error', () => resolve(false));
+    proc.unref();
+    process.env.DISPLAY = display;
+    setTimeout(() => resolve(true), 1000);
+  });
+  const ok = await telaVirtual;
+  return { ok, virtual: ok };
+}
+
+export function modoHeadless(): boolean {
+  return process.env.PGMEI_HEADLESS === 'true';
+}
+
 export async function abrirNavegador(opcoes: { headless?: boolean; chromePath?: string } = {}) {
   const chromePath = opcoes.chromePath || localizarChrome();
   if (!chromePath) {
@@ -61,9 +91,20 @@ export async function abrirNavegador(opcoes: { headless?: boolean; chromePath?: 
   process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE ??= 'addBinding';
   const { default: puppeteer } = await import('rebrowser-puppeteer-core');
 
+  let headless = opcoes.headless ?? modoHeadless();
+  let virtual = false;
+  if (!headless) {
+    const tela = await garantirTela();
+    virtual = tela.virtual;
+    if (!tela.ok) {
+      console.warn('[navegador] Sem tela e sem Xvfb instalado: usando modo headless.');
+      headless = true;
+    }
+  }
+
   const proxy = proxyConfigurado();
   const browser = await puppeteer.launch({
-    headless: opcoes.headless ?? true,
+    headless,
     executablePath: chromePath,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
@@ -87,7 +128,8 @@ export async function abrirNavegador(opcoes: { headless?: boolean; chromePath?: 
     return page;
   };
 
-  return { browser, prepararPagina };
+  // telaVirtual: ninguém está vendo a janela, então não adianta esperar captcha manual.
+  return { browser, prepararPagina, headless, telaVirtual: virtual };
 }
 
 // Abre a URL esperando só o HTML (o portal mantém conexões abertas e o

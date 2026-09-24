@@ -14,15 +14,16 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-# Chromium usado pelo robô gratuito do PGMEI (consulta de DAS e DASN-SIMEI)
-RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont font-noto
+# Chromium e tela virtual (Xvfb) usados pelos robôs do PGMEI e da CND
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont font-noto xvfb
 
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV STORAGE_DIR=/app/storage
 ENV DATA_DIR=/app/data
 ENV CHROME_PATH=/usr/lib/chromium/chromium
-ENV PGMEI_HEADLESS=true
+# false = Chrome com janela numa tela virtual (Xvfb): passa melhor pela verificação anti-robô
+ENV PGMEI_HEADLESS=false
 
 COPY package.json package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
