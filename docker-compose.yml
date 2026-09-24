@@ -5,17 +5,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: carbono_auditacnpj
+    container_name: virgula_contabil
     restart: unless-stopped
     ports:
       - "3000:3000"
+    # O Chromium do robô do PGMEI precisa de memória compartilhada
+    shm_size: "1gb"
     environment:
       - NODE_ENV=production
       - PORT=3000
       - STORAGE_DIR=/app/storage
       - DATA_DIR=/app/data
+      - PGMEI_HEADLESS=true
     volumes:
-      # Montagem para salvar todos os PDFs baixados, CNDs e Guias DAS diretamente no seu computador
+      # PDFs de CND, relatórios do MEI e dossiês ficam no seu computador
       - ./storage:/app/storage
-      # Montagem para persistir a base de dados da carteira Multi-CNPJ
+      # Carteira multi-CNPJ e últimas consultas do MEI
       - ./data:/app/data

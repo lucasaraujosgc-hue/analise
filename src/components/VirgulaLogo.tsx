@@ -2,67 +2,48 @@ import React from 'react';
 
 interface VirgulaLogoProps {
   size?: 'sm' | 'md' | 'lg';
+  // "dark" = para usar sobre fundo escuro (verde da marca).
   theme?: 'dark' | 'light';
   className?: string;
+  href?: string;
 }
 
-export const VirgulaLogo: React.FC<VirgulaLogoProps> = ({
-  size = 'md',
-  theme = 'dark',
-  className = '',
-}) => {
-  const isLight = theme === 'light';
+// Logo "Vírgula, Contábil" conforme o arquivo de identidade visual:
+// Vírgula em Fraunces bold (verde), vírgula em laranja e "CONTÁBIL" em Inter
+// espaçado, centralizado abaixo.
+export const VirgulaLogo: React.FC<VirgulaLogoProps> = ({ size = 'md', theme = 'light', className = '', href }) => {
+  const onDark = theme === 'dark';
 
-  const textPrimary = isLight
-    ? 'text-[oklch(0.36_0.06_165)]'
-    : 'text-white';
-
-  const textAccent = 'text-[oklch(0.72_0.14_55)]';
-
-  const textMuted = isLight
-    ? 'text-[oklch(0.48_0.02_160)]'
-    : 'text-slate-300';
-
-  const sizeClasses = {
-    sm: {
-      text: 'text-xl',
-      comma: 'text-xl',
-      sub: 'text-[9px] tracking-[0.28em] ml-[0.28em]',
-    },
-    md: {
-      text: 'text-2xl md:text-[28px]',
-      comma: 'text-2xl md:text-[28px]',
-      sub: 'text-[10px] md:text-[11px] tracking-[0.3em] ml-[0.3em]',
-    },
-    lg: {
-      text: 'text-3xl md:text-4xl',
-      comma: 'text-3xl md:text-4xl',
-      sub: 'text-xs md:text-sm tracking-[0.32em] ml-[0.32em]',
-    },
+  const sizes = {
+    sm: { word: 'text-xl', sub: 'text-[9px] tracking-[0.3em] ml-[0.3em]' },
+    md: { word: 'text-2xl md:text-[28px]', sub: 'text-[10px] md:text-[11px] tracking-[0.3em] ml-[0.3em]' },
+    lg: { word: 'text-3xl md:text-4xl', sub: 'text-xs md:text-[13px] tracking-[0.3em] ml-[0.3em]' },
   }[size];
 
-  return (
-    <div className={`flex flex-col items-center select-none ${className}`}>
+  const content = (
+    <div className="flex flex-col items-center">
       <div className="flex items-baseline">
-        <span
-          className={`${sizeClasses.text} font-bold ${textPrimary} tracking-tight`}
-          style={{ fontFamily: "'Fraunces', Georgia, serif" }}
-        >
+        <span className={`${sizes.word} font-serif font-bold tracking-tight ${onDark ? 'text-primary-foreground' : 'text-primary'}`}>
           Vírgula
         </span>
-        <span
-          className={`${sizeClasses.comma} font-bold ${textAccent} leading-none`}
-          style={{ fontFamily: "'Fraunces', Georgia, serif" }}
-        >
-          ,
-        </span>
+        <span className={`${sizes.word} font-serif font-bold leading-none text-accent`}>,</span>
       </div>
       <span
-        className={`font-sans font-normal ${textMuted} uppercase leading-none mt-0.5 ${sizeClasses.sub}`}
-        style={{ fontFamily: "'Inter', sans-serif" }}
+        className={`font-sans font-normal uppercase leading-none mt-0.5 ${sizes.sub} ${
+          onDark ? 'text-primary-200' : 'text-muted-foreground'
+        }`}
       >
         Contábil
       </span>
     </div>
   );
+
+  if (href) {
+    return (
+      <a href={href} className={`flex items-center gap-3 select-none hover:opacity-80 transition-opacity no-underline ${className}`}>
+        {content}
+      </a>
+    );
+  }
+  return <div className={`flex items-center select-none ${className}`}>{content}</div>;
 };

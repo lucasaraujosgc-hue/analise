@@ -1,12 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { EmpresaData } from './types/cnpj';
-import { 
-  fetchCnpjData, 
-  fetchCarteira, 
-  saveCompanyToCarteira, 
-  deleteCompanyFromCarteira,
-  updatePendenciasInCarteira 
-} from './services/api';
+import { fetchCnpjData, fetchCarteira, saveCompanyToCarteira, deleteCompanyFromCarteira } from './services/api';
 import { Navbar } from './components/Navbar';
 import { PortfolioManager } from './components/PortfolioManager';
 import { CompanyOverview } from './components/CompanyOverview';
@@ -20,132 +14,113 @@ import { DossierModal } from './components/DossierModal';
 import { StorageManagerModal } from './components/StorageManagerModal';
 import { ApiInfoModal } from './components/ApiInfoModal';
 import { VirgulaLogo } from './components/VirgulaLogo';
-import { ArrowLeft, Building2, ShieldCheck, Printer, RefreshCw, Sparkles, Trash2, CheckCircle2, AlertCircle, X } from 'lucide-react';
-import { formatCNPJ } from './utils/formatters';
+import { ArrowLeft, Printer, RefreshCw, Trash2, CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { cleanCNPJ } from './utils/formatters';
+
+type Toast = { type: 'success' | 'error' | 'info'; message: string };
 
 export default function App() {
   const [carteira, setCarteira] = useState<EmpresaData[]>([]);
   const [selectedEmpresa, setSelectedEmpresa] = useState<EmpresaData | null>(null);
   const [isMei, setIsMei] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
 
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 4500);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
-
-  // Modals
   const [isSeleniumModalOpen, setIsSeleniumModalOpen] = useState(false);
   const [isDossierModalOpen, setIsDossierModalOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
   const [isApiInfoModalOpen, setIsApiInfoModalOpen] = useState(false);
 
-  // Load Carteira Multi-CNPJ on startup
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   const loadPortfolio = async () => {
-    try {
-      const data = await fetchCarteira();
-      setCarteira(data);
-    } catch (err) {
-      console.warn('Erro ao carregar carteira inicial:', err);
-    }
+    setCarteira(await fetchCarteira());
   };
 
   useEffect(() => {
     loadPortfolio();
   }, []);
 
-  // Update selected company when it is selected
-  const handleSelectEmpresa = (emp: EmpresaData) => {
+  // Mantém a empresa aberta em sincronia com a carteira (pendências, contatos editados etc.).
+  useEffect(() => {
+    if (!selectedEmpresa) return;
+    const atual = carteira.find(e => cleanCNPJ(e.cnpj) === cleanCNPJ(selectedEmpresa.cnpj));
+    if (atual && atual !== selectedEmpresa) setSelectedEmpresa(atual);
+  }, [carteira]);
+
+  const selecionar = (emp: EmpresaData) => {
     setSelectedEmpresa(emp);
     setIsMei(Boolean(emp.opcao_pelo_mei));
+  };
+
+  const handleSelectEmpresa = (emp: EmpresaData) => {
+    selecionar(emp);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Direct print from portfolio button
   const handlePrintReport = (emp: EmpresaData) => {
-    setSelectedEmpresa(emp);
-    setIsMei(Boolean(emp.opcao_pelo_mei));
+    selecionar(emp);
     setIsDossierModalOpen(true);
   };
 
-  // Add new CNPJ to portfolio
-  const handleAddCnpjToCarteira = async (cnpj: string, meiOverride?: boolean) => {
-    const clean = cnpj.replace(/\D/g, '');
+  const handleAddCnpjToCarteira = async (cnpj: string) => {
+    const clean = cleanCNPJ(cnpj);
     if (clean.length !== 14) {
-      setToast({ type: 'error', message: 'CNPJ inválido. Digite os 14 dígitos numéricos.' });
+      setToast({ type: 'error', message: 'CNPJ inválido. Informe os 14 caracteres.' });
       return;
     }
 
     setIsLoading(true);
-    setError(null);
-
     try {
       const data = await fetchCnpjData(clean);
-      if (typeof meiOverride === 'boolean') {
-        data.opcao_pelo_mei = meiOverride;
-      }
-
-      // Salva na carteira (banco local e persistência)
-      const updatedList = await saveCompanyToCarteira(data);
-      setCarteira(updatedList);
-      
-      // Abre a empresa recém adicionada para inspeção imediata
-      setSelectedEmpresa(data);
-      setIsMei(Boolean(data.opcao_pelo_mei));
-      setToast({ type: 'success', message: `${data.razao_social} cadastrada na sua carteira!` });
+      const lista = await saveCompanyToCarteira(data);
+      setCarteira(lista);
+      const salvo = lista.find(e => cleanCNPJ(e.cnpj) === clean) || data;
+      selecionar(salvo);
+      const semContato = salvo.telefone === 'Não cadastrado' && salvo.email === 'Não cadastrado';
+      setToast({
+        type: semContato ? 'info' : 'success',
+        message: semContato
+          ? `${salvo.razao_social} cadastrada. As bases públicas não trouxeram telefone nem e-mail — você pode informá-los em "Contatos".`
+          : `${salvo.razao_social} cadastrada na carteira.`,
+      });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Erro ao consultar CNPJ na base da Receita Federal.' });
+      setToast({ type: 'error', message: err.message || 'Erro ao consultar o CNPJ.' });
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Refresh company data from RFB
   const handleRefreshEmpresa = async (cnpj: string) => {
-    const clean = cnpj.replace(/\D/g, '');
     try {
-      const freshData = await fetchCnpjData(clean);
-      const updatedList = await saveCompanyToCarteira(freshData);
-      setCarteira(updatedList);
-
-      if (selectedEmpresa && selectedEmpresa.cnpj.replace(/\D/g, '') === clean) {
-        setSelectedEmpresa(freshData);
-        setIsMei(Boolean(freshData.opcao_pelo_mei));
-      }
-      setToast({ type: 'success', message: `Dados de ${freshData.razao_social} atualizados com sucesso!` });
+      const fresh = await fetchCnpjData(cnpj);
+      setCarteira(await saveCompanyToCarteira(fresh));
+      setToast({ type: 'success', message: `Dados de ${fresh.razao_social} atualizados.` });
     } catch (err: any) {
-      setToast({ type: 'error', message: `Erro ao atualizar dados: ${err.message}` });
+      setToast({ type: 'error', message: `Erro ao atualizar: ${err.message}` });
     }
   };
 
-  // Remove company from portfolio
   const handleRemoveEmpresa = async (cnpj: string) => {
-    const clean = cnpj.replace(/\D/g, '');
-    
-    // Atualização otimista imediata na interface
-    setCarteira(prev => prev.filter(e => e.cnpj.replace(/\D/g, '') !== clean));
-    if (selectedEmpresa && selectedEmpresa.cnpj.replace(/\D/g, '') === clean) {
-      setSelectedEmpresa(null);
-    }
+    const clean = cleanCNPJ(cnpj);
+    setCarteira(prev => prev.filter(e => cleanCNPJ(e.cnpj) !== clean));
+    if (selectedEmpresa && cleanCNPJ(selectedEmpresa.cnpj) === clean) setSelectedEmpresa(null);
 
     try {
-      const updated = await deleteCompanyFromCarteira(clean);
-      setCarteira(updated);
-      setToast({ type: 'success', message: 'Empresa removida com sucesso da sua carteira!' });
+      setCarteira(await deleteCompanyFromCarteira(clean));
+      setToast({ type: 'success', message: 'Empresa removida da carteira.' });
     } catch (err: any) {
-      console.error('Erro ao remover empresa:', err);
       await loadPortfolio();
-      setToast({ type: 'error', message: 'Erro ao remover empresa: ' + (err.message || 'Erro inesperado') });
+      setToast({ type: 'error', message: 'Erro ao remover empresa: ' + (err.message || 'erro inesperado') });
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-white">
-      {/* Top Navbar */}
+    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans">
       <Navbar
         onOpenSelenium={() => setIsSeleniumModalOpen(true)}
         onOpenPrint={() => setIsDossierModalOpen(true)}
@@ -156,32 +131,27 @@ export default function App() {
         selectedCompanyName={selectedEmpresa?.razao_social}
       />
 
-      {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
-        {/* Quando nenhuma empresa está em detalhamento, exibe o Painel Multi-CNPJ */}
         {!selectedEmpresa ? (
-          <div className="space-y-6 animate-in fade-in duration-300">
-            {/* Boas-vindas & Banner de Identidade Visual Vírgula, Contábil */}
-            <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/40 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-xl relative overflow-hidden">
-              <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-emerald-500/10 via-teal-500/5 to-transparent pointer-events-none" />
-              
-              <div className="max-w-2xl space-y-3 relative z-10">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Vírgula, Contábil • Auditoria & Inteligência Fiscal</span>
-                </div>
-                
-                <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight leading-tight">
-                  Painel Central <span className="text-emerald-400">Multi-CNPJ</span>
+          <div className="space-y-6">
+            <section className="relative overflow-hidden rounded-3xl bg-primary text-primary-foreground p-6 sm:p-9">
+              <div className="absolute -right-10 -bottom-24 font-serif font-bold text-[260px] leading-none text-accent/25 select-none pointer-events-none" aria-hidden>
+                ,
+              </div>
+              <div className="relative max-w-2xl space-y-3">
+                <span className="inline-block text-[11px] font-semibold uppercase tracking-[0.25em] text-accent-200">
+                  Auditoria & inteligência fiscal
+                </span>
+                <h1 className="text-3xl sm:text-4xl font-semibold leading-tight">
+                  Painel da carteira <span className="text-accent-300">multi-CNPJ</span>
                 </h1>
-                
-                <p className="text-sm text-slate-300 leading-relaxed">
-                  Gerencie a regularidade fiscal da sua carteira de clientes: consulta de dados cadastrais, atividades econômicas (CNAEs), QSA, certidões CNDs (Federal e Estadual), débitos do MEI com automação Selenium e geração de dossiês com exportação em PDF e armazenamento Docker.
+                <p className="text-sm text-primary-100 leading-relaxed">
+                  Dados cadastrais, contatos, CNAEs e sócios, certidões negativas federal e estadual, e — para MEI — as guias DAS em aberto
+                  com valor de cada competência e as declarações DASN-SIMEI em atraso.
                 </p>
               </div>
-            </div>
+            </section>
 
-            {/* Gerenciador de Carteira Multi-CNPJ */}
             <PortfolioManager
               carteira={carteira}
               onSelectEmpresa={handleSelectEmpresa}
@@ -193,50 +163,40 @@ export default function App() {
             />
           </div>
         ) : (
-          /* Quando uma empresa específica é selecionada: Apresentação Detalhada de Compliance */
-          <div className="space-y-6 animate-in fade-in duration-300">
-            {/* Barra de Retorno e Ações Rápidas */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-md">
-              <div className="flex items-center gap-3">
+          <div className="space-y-6" key={selectedEmpresa.cnpj}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white border border-border p-3.5 rounded-2xl">
+              <div className="flex items-center gap-3 min-w-0">
                 <button
                   onClick={() => setSelectedEmpresa(null)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-slate-700"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary-50 hover:bg-primary-100 text-primary text-xs font-semibold transition cursor-pointer"
                 >
-                  <ArrowLeft className="w-4 h-4 text-emerald-400" />
-                  <span>Voltar para Carteira</span>
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Voltar para a carteira</span>
                 </button>
-                <div className="hidden sm:block h-5 w-px bg-slate-800" />
-                <span className="text-xs text-slate-400 truncate max-w-sm">
-                  Exibindo dossiê completo de: <strong className="text-white">{selectedEmpresa.razao_social}</strong>
+                <span className="hidden sm:block text-xs text-muted-foreground truncate">
+                  Dossiê de <strong className="text-foreground">{selectedEmpresa.razao_social}</strong>
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleRefreshEmpresa(selectedEmpresa.cnpj)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition"
-                  title="Atualizar dados da empresa na Receita Federal"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-muted text-foreground text-xs font-medium border border-border transition cursor-pointer"
+                  title="Buscar novamente os dados nas bases da Receita"
                 >
-                  <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Atualizar Dados</span>
+                  <RefreshCw className="w-3.5 h-3.5 text-primary" />
+                  <span>Atualizar dados</span>
                 </button>
-
                 <button
                   onClick={() => setIsDossierModalOpen(true)}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-900/30 transition cursor-pointer"
-                  title="Abrir Dossiê Executivo para Impressão, Download em PDF ou Salvar no Docker"
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-primary hover:bg-primary-800 text-primary-foreground font-semibold text-xs transition cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Dossiê & PDF</span>
                 </button>
-
                 <button
-                  onClick={() => {
-                    if (selectedEmpresa) {
-                      handleRemoveEmpresa(selectedEmpresa.cnpj);
-                    }
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 text-xs font-medium border border-slate-700 transition"
+                  onClick={() => handleRemoveEmpresa(selectedEmpresa.cnpj)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-muted-foreground hover:text-rose-700 text-xs font-medium border border-border transition cursor-pointer"
                   title="Remover esta empresa da carteira"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -245,120 +205,72 @@ export default function App() {
               </div>
             </div>
 
-            {/* 1. Visão Geral da Empresa */}
             <CompanyOverview empresa={selectedEmpresa} />
 
-            {/* 2. CNDs e RPA com Leitor de PDF (Federal e Estadual) */}
+            <MeiSection empresa={selectedEmpresa} isMei={isMei} setIsMei={setIsMei} onRefreshPortfolioSummary={loadPortfolio} />
+
             <CndAnalysisSection
               empresa={selectedEmpresa}
               onOpenSeleniumModal={() => setIsSeleniumModalOpen(true)}
               onRefreshPortfolioSummary={loadPortfolio}
             />
 
-            {/* 3. Módulo MEI & PGMEI (com as guias em atraso e valor total) */}
-            <MeiSection
-              empresa={selectedEmpresa}
-              isMei={isMei}
-              setIsMei={setIsMei}
-              onRefreshPortfolioSummary={loadPortfolio}
-            />
-
-            {/* 4. CNAEs (Principal + Secundários detalhados) */}
-            <CnaeSection
-              cnaePrincipal={selectedEmpresa.cnae_fiscal}
-              cnaesSecundarios={selectedEmpresa.cnaes_secundarios}
-            />
-
-            {/* 5. Endereço e Contatos Oficiais */}
             <AddressAndContact
-              endereco={selectedEmpresa.endereco}
-              telefone={selectedEmpresa.telefone}
-              email={selectedEmpresa.email}
+              empresa={selectedEmpresa}
+              onContatoSalvo={lista => {
+                setCarteira(lista);
+                setToast({ type: 'success', message: 'Contato salvo. Ele será mantido nas próximas atualizações.' });
+              }}
             />
 
-            {/* 6. Quadro de Sócios e Administradores (QSA) */}
-            <QsaSection
-              qsa={selectedEmpresa.qsa}
-              isMei={isMei || selectedEmpresa.opcao_pelo_mei}
-            />
+            <CnaeSection cnaePrincipal={selectedEmpresa.cnae_fiscal} cnaesSecundarios={selectedEmpresa.cnaes_secundarios} />
+
+            <QsaSection qsa={selectedEmpresa.qsa} isMei={isMei || selectedEmpresa.opcao_pelo_mei} />
           </div>
         )}
       </main>
 
-      {/* Footer Oficial Vírgula, Contábil */}
-      <footer className="bg-slate-950 border-t border-slate-900 py-8 text-center text-xs text-slate-500 mt-12 print:hidden">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <VirgulaLogo size="sm" theme="dark" />
-            <span className="text-slate-400 font-medium">
-              Auditoria, Compliance Fiscal & Inteligência Multi-CNPJ
-            </span>
+      <footer className="border-t border-border bg-white py-8 mt-12 print:hidden">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-4">
+            <VirgulaLogo size="sm" />
+            <span>Auditoria, compliance fiscal e inteligência multi-CNPJ</span>
           </div>
-          <div className="flex items-center gap-3 text-slate-500 text-[11px]">
-            <span>
-              PDFs no Docker: <code className="text-emerald-400 font-mono">./storage</code> (/app/storage)
-            </span>
-            <span>•</span>
-            <span>© {new Date().getFullYear()} Vírgula, Contábil</span>
-          </div>
+          <span>© {new Date().getFullYear()} Vírgula, Contábil</span>
         </div>
       </footer>
 
-      {/* Modals */}
       <SeleniumModal
         isOpen={isSeleniumModalOpen}
         onClose={() => setIsSeleniumModalOpen(false)}
         cnpj={selectedEmpresa?.cnpj || ''}
-        isMei={isMei}
       />
 
       {selectedEmpresa && (
-        <DossierModal
-          isOpen={isDossierModalOpen}
-          onClose={() => setIsDossierModalOpen(false)}
-          empresa={selectedEmpresa}
-          isMei={isMei}
-        />
+        <DossierModal isOpen={isDossierModalOpen} onClose={() => setIsDossierModalOpen(false)} empresa={selectedEmpresa} isMei={isMei} />
       )}
 
-      {/* Modal de Armazenamento Docker (/app/storage) */}
-      <StorageManagerModal
-        isOpen={isStorageModalOpen}
-        onClose={() => setIsStorageModalOpen(false)}
-      />
+      <StorageManagerModal isOpen={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
+      <ApiInfoModal isOpen={isApiInfoModalOpen} onClose={() => setIsApiInfoModalOpen(false)} />
 
-      {/* Modal Informativo das APIs da Receita Federal */}
-      <ApiInfoModal
-        isOpen={isApiInfoModalOpen}
-        onClose={() => setIsApiInfoModalOpen(false)}
-      />
-
-      {/* Notificação Toast Flutuante */}
       {toast && (
-        <div className="fixed top-5 right-5 z-50 max-w-sm w-full animate-in slide-in-from-top-3 fade-in duration-200">
-          <div className={`p-4 rounded-2xl border shadow-2xl flex items-start gap-3 backdrop-blur-md ${
-            toast.type === 'success' 
-              ? 'bg-slate-900/95 border-emerald-500/50 text-emerald-200 shadow-emerald-950/40' 
-              : toast.type === 'error'
-              ? 'bg-slate-900/95 border-rose-500/50 text-rose-200 shadow-rose-950/40'
-              : 'bg-slate-900/95 border-slate-700 text-slate-200 shadow-black/60'
-          }`}>
+        <div className="fixed top-20 right-5 z-50 max-w-sm w-[calc(100%-2.5rem)]" role="status">
+          <div
+            className={`p-4 rounded-2xl border bg-white shadow-lg flex items-start gap-3 ${
+              toast.type === 'success' ? 'border-primary-200' : toast.type === 'error' ? 'border-rose-300' : 'border-accent-300'
+            }`}
+          >
             <div className="mt-0.5 shrink-0">
               {toast.type === 'success' ? (
-                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <CheckCircle2 className="w-5 h-5 text-primary" />
               ) : toast.type === 'error' ? (
-                <AlertCircle className="w-5 h-5 text-rose-400" />
+                <AlertCircle className="w-5 h-5 text-rose-600" />
               ) : (
-                <Sparkles className="w-5 h-5 text-emerald-400" />
+                <Info className="w-5 h-5 text-accent-600" />
               )}
             </div>
-            <div className="flex-1 text-xs leading-relaxed font-medium">
-              {toast.message}
-            </div>
-            <button 
-              onClick={() => setToast(null)}
-              className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
-            >
+            <div className="flex-1 text-xs leading-relaxed text-foreground">{toast.message}</div>
+            <button onClick={() => setToast(null)} className="text-muted-foreground hover:text-foreground p-0.5 rounded cursor-pointer" aria-label="Fechar">
               <X className="w-4 h-4" />
             </button>
           </div>

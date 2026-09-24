@@ -1,27 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { EmpresaData, PGMEIResult, GuiaAtrasoMEI } from '../types/cnpj';
-import { consultPgmeiRpa, parsePgmeiExtract, savePdfToStorage, updatePendenciasInCarteira } from '../services/api';
-import { formatCurrency, formatCNPJ } from '../utils/formatters';
+import React, { useEffect, useRef, useState } from 'react';
+import { EmpresaData, JobMei, ResultadoMei, SituacaoCompetencia, SituacaoDeclaracao, StatusSistema, CompetenciaMei } from '../types/cnpj';
 import {
-  AlertCircle,
-  ExternalLink,
-  Play,
-  Loader2,
-  DollarSign,
-  Calendar,
-  AlertTriangle,
-  Receipt,
-  Copy,
-  Check,
-  Building,
-  CheckCircle2,
-  Upload,
-  Plus,
-  Save,
-  HardDrive,
-  FileText,
-  ShieldAlert,
-  ChevronDown
+  fetchJobMei,
+  fetchResultadoMei,
+  fetchStatusSistema,
+  importarExtratoMei,
+  iniciarConsultaMei,
+  marcarDeclaracaoMei,
+  savePdfToStorage,
+} from '../services/api';
+import { DASN_SIMEI_URL, PGMEI_URL } from '../data/cndLinks';
+import { formatCNPJ, formatCurrency } from '../utils/formatters';
+import {
+  AlertCircle, AlertTriangle, CheckCircle2, ClipboardCopy, ExternalLink, FileWarning, HardDrive,
+  Loader2, Play, Receipt, Upload, Check,
 } from 'lucide-react';
 
 interface MeiSectionProps {
@@ -31,602 +23,506 @@ interface MeiSectionProps {
   onRefreshPortfolioSummary?: () => void;
 }
 
-export const MeiSection: React.FC<MeiSectionProps> = ({ 
-  empresa, 
-  isMei, 
-  setIsMei,
-  onRefreshPortfolioSummary 
-}) => {
-  const PGMEI_URL =
-    'https://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao';
+const EM_ABERTO: SituacaoCompetencia[] = ['EM_ABERTO', 'A_VENCER', 'DIVIDA_ATIVA', 'BLOQUEADO_DASN', 'ABAIXO_MINIMO', 'REAPURACAO_NECESSARIA'];
 
-  const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<PGMEIResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [savingStorage, setSavingStorage] = useState(false);
-  const [storageSuccess, setStorageSuccess] = useState<string | null>(null);
+const SITUACAO: Record<SituacaoCompetencia, { rotulo: string; classe: string }> = {
+  EM_ABERTO: { rotulo: 'Vencida', classe: 'bg-rose-50 text-rose-800 border-rose-200' },
+  A_VENCER: { rotulo: 'A vencer', classe: 'bg-accent-50 text-accent-800 border-accent-200' },
+  DIVIDA_ATIVA: { rotulo: 'Dívida ativa (PGFN)', classe: 'bg-rose-100 text-rose-900 border-rose-300' },
+  BLOQUEADO_DASN: { rotulo: 'Falta DASN', classe: 'bg-accent-100 text-accent-800 border-accent-300' },
+  ABAIXO_MINIMO: { rotulo: 'Abaixo de R$ 10', classe: 'bg-muted text-muted-foreground border-border' },
+  REAPURACAO_NECESSARIA: { rotulo: 'Refazer apuração', classe: 'bg-accent-50 text-accent-800 border-accent-200' },
+  PAGO: { rotulo: 'Pago', classe: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  PARCELADO: { rotulo: 'Parcelado', classe: 'bg-primary-50 text-primary border-primary-200' },
+  DEBITO_AUTOMATICO: { rotulo: 'Débito automático', classe: 'bg-primary-50 text-primary border-primary-200' },
+  SEM_DEBITO: { rotulo: 'Sem débito', classe: 'bg-muted text-muted-foreground border-border' },
+  NAO_OPTANTE: { rotulo: 'Não optante', classe: 'bg-muted text-muted-foreground border-border' },
+  ERRO: { rotulo: 'Erro', classe: 'bg-muted text-muted-foreground border-border' },
+};
 
-  // Extrato import state
-  const [isImportOpen, setIsImportOpen] = useState(false);
-  const [pastedExtrato, setPastedExtrato] = useState('');
-  const [parsingExtrato, setParsingExtrato] = useState(false);
+const DECLARACAO: Record<SituacaoDeclaracao, { rotulo: string; classe: string }> = {
+  PENDENTE: { rotulo: 'Em atraso', classe: 'bg-rose-50 text-rose-800 border-rose-200' },
+  ENTREGUE: { rotulo: 'Entregue', classe: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  NAO_VERIFICADA: { rotulo: 'Não verificada', classe: 'bg-muted text-muted-foreground border-border' },
+};
 
-  // Manual debit addition state
-  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
-  const [manualComp, setManualComp] = useState('');
-  const [manualVenc, setManualVenc] = useState('');
-  const [manualPrincipal, setManualPrincipal] = useState('75.60');
-  const [manualMultaJuros, setManualMultaJuros] = useState('12.50');
-  const [manualSituacao, setManualSituacao] = useState('DEVEDOR');
+function valor(v?: number) {
+  return v === undefined ? '—' : formatCurrency(v);
+}
 
-  // Load PGMEI debts
+function textoResumo(empresa: EmpresaData, r: ResultadoMei): string {
+  const abertas = r.competencias.filter(c => EM_ABERTO.includes(c.situacao));
+  const linhas = [
+    `MEI ${empresa.razao_social} — CNPJ ${formatCNPJ(empresa.cnpj)}`,
+    `Consulta ao PGMEI em ${new Date(r.consultadoEm).toLocaleString('pt-BR')}`,
+    '',
+    abertas.length ? 'Guias DAS em aberto:' : 'Nenhuma guia DAS em aberto.',
+    ...abertas.map(
+      c => `- ${c.periodo}: ${valor(c.total)} (${SITUACAO[c.situacao].rotulo.toLowerCase()}${c.vencimento ? `, venc. ${c.vencimento}` : ''})`,
+    ),
+    '',
+    `Total em aberto: ${formatCurrency(r.resumo.totalGeral)}`,
+    r.resumo.declaracoesPendentes.length
+      ? `DASN-SIMEI em atraso: ${r.resumo.declaracoesPendentes.join(', ')}`
+      : 'Nenhuma DASN-SIMEI em atraso identificada.',
+  ];
+  return linhas.join('\n');
+}
+
+export const MeiSection: React.FC<MeiSectionProps> = ({ empresa, isMei, setIsMei, onRefreshPortfolioSummary }) => {
+  const [resultado, setResultado] = useState<ResultadoMei | null>(null);
+  const [carregando, setCarregando] = useState(true);
+  const [status, setStatus] = useState<StatusSistema | null>(null);
+  const [job, setJob] = useState<JobMei | null>(null);
+  const [erro, setErro] = useState<{ texto: string; bloqueado?: boolean } | null>(null);
+  const [maxAnos, setMaxAnos] = useState(6);
+  const [verificarDasn, setVerificarDasn] = useState(true);
+  const [mostrarTodas, setMostrarTodas] = useState(false);
+  const [importarAberto, setImportarAberto] = useState(false);
+  const [textoExtrato, setTextoExtrato] = useState('');
+  const [textoDeclaracoes, setTextoDeclaracoes] = useState('');
+  const [importando, setImportando] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (isMei && !data && !loading) {
-      handleQueryPgmei();
-    }
-  }, [isMei, empresa.cnpj]);
-
-  const handleQueryPgmei = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await consultPgmeiRpa(empresa.cnpj);
-      setData(res);
-
-      // Sincroniza pendências na carteira
-      await updatePendenciasInCarteira(empresa.cnpj, {
-        pendenciasResumo: {
-          totalDebitosMei: res.valor_total_atraso,
-          guiasAtrasoMei: res.total_guias_atraso,
-        }
-      });
-      if (onRefreshPortfolioSummary) onRefreshPortfolioSummary();
-    } catch (err: any) {
-      setError(err.message || 'Falha ao consultar PGMEI');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCopyCnpj = () => {
-    navigator.clipboard.writeText(formatCNPJ(empresa.cnpj));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  // Import pasted extract
-  const handleImportExtrato = async () => {
-    if (!pastedExtrato.trim()) return;
-    setParsingExtrato(true);
-    try {
-      const res = await parsePgmeiExtract(pastedExtrato, empresa.cnpj);
-      if (res.competencias && res.competencias.length > 0) {
-        setData(prev => ({
-          success: true,
-          url: PGMEI_URL,
-          cnpj: empresa.cnpj,
-          status_mei: 'OPTANTE_SIMEI',
-          total_guias_atraso: res.total_guias,
-          valor_total_atraso: res.valor_total,
-          competencias_pendentes: res.competencias,
-          instrucoes_rpa: prev?.instrucoes_rpa || {
-            url: PGMEI_URL,
-            campo_cnpj: '#cnpj',
-            botao_continuar: 'Continuar',
-            seletor_tabela_guias: 'table',
-          }
-        }));
-
-        await updatePendenciasInCarteira(empresa.cnpj, {
-          pendenciasResumo: {
-            totalDebitosMei: res.valor_total,
-            guiasAtrasoMei: res.total_guias,
-          }
-        });
-        if (onRefreshPortfolioSummary) onRefreshPortfolioSummary();
-        setIsImportOpen(false);
-        setPastedExtrato('');
-      } else {
-        alert('Nenhuma competência com formato de débito (ex: 01/2025 R$ 75,60) foi identificada no texto colado.');
-      }
-    } catch (err: any) {
-      alert('Erro ao processar extrato: ' + err.message);
-    } finally {
-      setParsingExtrato(false);
-    }
-  };
-
-  // Add manual debit
-  const handleAddManualDebt = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!manualComp) return;
-
-    const princ = parseFloat(manualPrincipal.replace(',', '.')) || 75.60;
-    const mj = parseFloat(manualMultaJuros.replace(',', '.')) || 0;
-    const tot = Number((princ + mj).toFixed(2));
-
-    const newDebt: GuiaAtrasoMEI = {
-      periodo: manualComp,
-      vencimento: manualVenc || `20/${manualComp}`,
-      principal: princ,
-      multa_juros: mj,
-      total: tot,
-      situacao: manualSituacao,
-      tipo: 'DAS-MEI',
-      linha_digitavel: `85890000000 8 ${Math.floor(tot * 100)} 0328240 10000000000 0 ${empresa.cnpj.slice(0, 8)}`,
+    let ativo = true;
+    Promise.all([fetchResultadoMei(empresa.cnpj).catch(() => null), fetchStatusSistema()]).then(([r, s]) => {
+      if (!ativo) return;
+      setResultado(r);
+      setStatus(s);
+      setCarregando(false);
+    });
+    return () => {
+      ativo = false;
+      if (timer.current) clearTimeout(timer.current);
     };
+  }, [empresa.cnpj]);
 
-    if (data) {
-      const updatedList = [newDebt, ...data.competencias_pendentes];
-      const updatedTotal = Number(updatedList.reduce((acc, curr) => acc + curr.total, 0).toFixed(2));
-      setData({
-        ...data,
-        total_guias_atraso: updatedList.length,
-        valor_total_atraso: updatedTotal,
-        competencias_pendentes: updatedList,
-      });
-
-      updatePendenciasInCarteira(empresa.cnpj, {
-        pendenciasResumo: {
-          totalDebitosMei: updatedTotal,
-          guiasAtrasoMei: updatedList.length,
-        }
-      });
-    }
-
-    setIsManualModalOpen(false);
-    setManualComp('');
-    setManualVenc('');
+  const mostrarAviso = (texto: string) => {
+    setAviso(texto);
+    setTimeout(() => setAviso(null), 4000);
   };
 
-  // Save DAS / Extract report to Docker storage volume mount
-  const handleSaveToStorage = async () => {
-    if (!data) return;
-    setSavingStorage(true);
-    setStorageSuccess(null);
+  const acompanhar = (jobId: string) => {
+    timer.current = setTimeout(async () => {
+      try {
+        const atual = await fetchJobMei(jobId);
+        setJob(atual);
+        if (atual.status === 'concluido' && atual.resultado) {
+          setResultado(atual.resultado);
+          setJob(null);
+          onRefreshPortfolioSummary?.();
+        } else if (atual.status === 'erro') {
+          setErro({ texto: atual.erro || 'Falha na consulta.', bloqueado: atual.bloqueado });
+          setJob(null);
+        } else {
+          acompanhar(jobId);
+        }
+      } catch (err: any) {
+        setErro({ texto: err.message });
+        setJob(null);
+      }
+    }, 2000);
+  };
+
+  const consultar = async () => {
+    setErro(null);
     try {
-      const reportText = `RELATÓRIO DE APURAÇÃO PGMEI - RECEITA FEDERAL
-CNPJ: ${formatCNPJ(empresa.cnpj)}
-Razão Social: ${empresa.razao_social}
-Data da Apuração: ${new Date().toLocaleString('pt-BR')}
-Total de Guias em Atraso: ${data.total_guias_atraso}
-Valor Total da Dívida: ${formatCurrency(data.valor_total_atraso)}
+      const jobId = await iniciarConsultaMei(empresa.cnpj, { maxAnos, verificarDasn });
+      setJob({ id: jobId, cnpj: empresa.cnpj, status: 'na_fila', etapa: 'Iniciando...', atual: 0, total: 0 });
+      acompanhar(jobId);
+    } catch (err: any) {
+      setErro({ texto: err.message });
+    }
+  };
 
-COMPETÊNCIAS PENDENTES:
-${data.competencias_pendentes.map(c => `- Competência: ${c.periodo} | Vencimento: ${c.vencimento} | Principal: ${formatCurrency(c.principal)} | Multa/Juros: ${formatCurrency(c.multa_juros)} | Total: ${formatCurrency(c.total)} | Situação: ${c.situacao}`).join('\n')}
-`;
+  const importar = async () => {
+    setImportando(true);
+    setErro(null);
+    try {
+      const r = await importarExtratoMei(empresa.cnpj, { texto: textoExtrato || undefined, textoDeclaracoes: textoDeclaracoes || undefined });
+      setResultado(r);
+      setImportarAberto(false);
+      setTextoExtrato('');
+      setTextoDeclaracoes('');
+      onRefreshPortfolioSummary?.();
+      mostrarAviso(`${r.competencias.length} competência(s) importada(s).`);
+    } catch (err: any) {
+      setErro({ texto: err.message });
+    } finally {
+      setImportando(false);
+    }
+  };
 
-      const safeFilename = `DAS_MEI_${empresa.cnpj}_${new Date().toISOString().slice(0, 10)}.txt`;
+  const marcar = async (ano: number, situacao: SituacaoDeclaracao) => {
+    try {
+      setResultado(await marcarDeclaracaoMei(empresa.cnpj, ano, situacao));
+      onRefreshPortfolioSummary?.();
+    } catch (err: any) {
+      setErro({ texto: err.message });
+    }
+  };
 
+  const copiarResumo = () => {
+    if (!resultado) return;
+    navigator.clipboard.writeText(textoResumo(empresa, resultado));
+    mostrarAviso('Resumo copiado — pronto para enviar ao cliente.');
+  };
+
+  const salvarRelatorio = async () => {
+    if (!resultado) return;
+    try {
       const res = await savePdfToStorage({
         cnpj: empresa.cnpj,
         tipo: 'DAS_MEI',
-        filename: safeFilename,
-        textContent: reportText,
-        metadata: { total: data.valor_total_atraso, guias: data.total_guias_atraso },
+        filename: `MEI_${empresa.cnpj}_${new Date().toISOString().slice(0, 10)}.txt`,
+        textContent: textoResumo(empresa, resultado),
       });
-
-      setStorageSuccess(`Salvo com sucesso na montagem Docker: ${res.filename}`);
-      setTimeout(() => setStorageSuccess(null), 5000);
+      mostrarAviso(`Relatório salvo em Arquivos: ${res.filename}`);
     } catch (err: any) {
-      alert('Falha ao salvar no Docker storage: ' + err.message);
-    } finally {
-      setSavingStorage(false);
+      setErro({ texto: err.message });
     }
   };
 
   if (!isMei) {
     return (
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5 sm:p-7">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-slate-100 text-slate-500">
-              <Receipt className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-slate-900">
-                Módulo PGMEI (Microempreendedor Individual)
-              </h3>
-              <p className="text-xs text-slate-500">
-                Consulta de DAS em atraso desabilitada para empresas não marcadas como MEI
-              </p>
-            </div>
+      <div className="bg-white rounded-2xl border border-border p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-muted text-muted-foreground">
+            <Receipt className="w-5 h-5" />
           </div>
-
-          <button
-            onClick={() => setIsMei(true)}
-            className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-sm transition cursor-pointer self-start sm:self-center"
-          >
-            Marcar Empresa como MEI & Consultar PGMEI
-          </button>
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">MEI — guias DAS e DASN-SIMEI</h3>
+            <p className="text-xs text-muted-foreground">Segundo a Receita, esta empresa não é optante pelo SIMEI.</p>
+          </div>
         </div>
+        <button
+          onClick={() => setIsMei(true)}
+          className="px-4 py-2 rounded-xl bg-white hover:bg-muted text-foreground border border-border font-semibold text-xs transition cursor-pointer self-start sm:self-center"
+        >
+          Consultar como MEI mesmo assim
+        </button>
       </div>
     );
   }
 
+  const roboIndisponivel = status && !status.robo_pgmei.disponivel;
+  const competenciasVisiveis: CompetenciaMei[] = resultado
+    ? resultado.competencias.filter(c => mostrarTodas || EM_ABERTO.includes(c.situacao))
+    : [];
+  const r = resultado?.resumo;
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm border-2 border-amber-400/80 p-5 sm:p-7 relative overflow-hidden">
-      {/* Decorative top ribbon */}
-      <div className="absolute top-0 right-0 left-0 h-1.5 bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500" />
-
-      {/* Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100 mb-6">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300">
-              Módulo Ativo: MEI (SIMEI)
+    <div className="bg-white rounded-2xl border border-border overflow-hidden">
+      <div className="h-1.5 bg-accent" />
+      <div className="p-5 sm:p-7 space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+          <div>
+            <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-accent-100 text-accent-800">
+              MEI · SIMEI
             </span>
-            <span className="text-xs text-slate-500">
-              Apuração de Débitos Reais & Histórico Completo
-            </span>
+            <h3 className="text-xl font-semibold text-foreground mt-2">Guias DAS em aberto e declarações DASN-SIMEI</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              {resultado
+                ? `Última consulta: ${new Date(resultado.consultadoEm).toLocaleString('pt-BR')} · ${
+                    resultado.fonte === 'PGMEI_ROBO' ? 'robô no portal PGMEI' : 'extrato importado do PGMEI'
+                  }`
+                : 'Consulta gratuita no portal público do PGMEI — sem certificado digital e sem API paga.'}
+            </p>
           </div>
 
-          <h3 className="text-xl font-black text-slate-900">
-            Portal PGMEI - Débitos & Guias DAS
-          </h3>
-
-          <p className="text-xs text-slate-500 mt-1 font-mono break-all">
-            Link Oficial: <a href={PGMEI_URL} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{PGMEI_URL}</a>
-          </p>
-        </div>
-
-        {/* Controles do Cabeçalho */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={handleCopyCnpj}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 transition"
-            title="Copiar CNPJ formatado"
-          >
-            {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-slate-500" />}
-            <span>{copied ? 'CNPJ Copiado!' : 'Copiar CNPJ'}</span>
-          </button>
-
-          <a
-            href={PGMEI_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100/70 text-blue-700 transition"
-            title="Abrir página oficial do PGMEI em nova aba"
-          >
-            <span>Acessar PGMEI</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-
-          <button
-            onClick={handleQueryPgmei}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white shadow-sm transition disabled:opacity-50 cursor-pointer"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Atualizando Débitos...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-white" />
-                <span>Recalcular Débitos Reais</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2 mb-4">
-          <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {storageSuccess && (
-        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs flex items-center gap-2 mb-4 animate-in fade-in">
-          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
-          <span>{storageSuccess}</span>
-        </div>
-      )}
-
-      {/* Destaque Principal: Total das Guias em Atraso & Competências */}
-      {data && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Card Valor Total em Atraso */}
-            <div className="p-5 rounded-2xl bg-gradient-to-br from-rose-500 to-rose-700 text-white shadow-md relative overflow-hidden">
-              <div className="flex items-center justify-between opacity-80 mb-2">
-                <span className="text-xs font-bold uppercase tracking-wider">
-                  Valor Total das Guias em Atraso
-                </span>
-                <DollarSign className="w-5 h-5" />
-              </div>
-              <div className="text-3xl sm:text-4xl font-black tracking-tight">
-                {formatCurrency(data.valor_total_atraso)}
-              </div>
-              <p className="text-xs text-rose-100 mt-2">
-                Consolidado de {data.total_guias_atraso} competências vencidas (Principal + Multa SELIC + Juros)
-              </p>
-            </div>
-
-            {/* Card Competências Pendentes */}
-            <div className="p-5 rounded-2xl bg-slate-900 text-white shadow-md flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between text-slate-400 mb-2">
-                  <span className="text-xs font-bold uppercase tracking-wider">
-                    Competências Pendentes
-                  </span>
-                  <Calendar className="w-5 h-5 text-amber-400" />
-                </div>
-                <div className="text-3xl sm:text-4xl font-black text-amber-400">
-                  {data.total_guias_atraso} guias
-                </div>
-              </div>
-              <div className="mt-3 text-xs text-slate-400 flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Risco de envio para Dívida Ativa da União (PGFN)</span>
-              </div>
-            </div>
-
-            {/* Card de Ações de Exportação e Docker */}
-            <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-              <div>
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-2">
-                  Exportação & Volume Docker
-                </span>
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  Grave o espelho das guias diretamente na pasta montada <code className="px-1 py-0.5 rounded bg-slate-200 text-slate-800 font-mono">./storage/guias_mei/</code>.
-                </p>
-              </div>
-
-              <div className="pt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={handleSaveToStorage}
-                  disabled={savingStorage}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-slate-900 hover:bg-slate-800 text-white transition disabled:opacity-50"
-                  title="Salvar espelho das guias na pasta montada do Docker"
-                >
-                  {savingStorage ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                  )}
-                  <span>Salvar no Docker (/storage)</span>
-                </button>
-
-                <button
-                  onClick={() => setIsImportOpen(true)}
-                  className="flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 transition"
-                  title="Colar ou importar texto do extrato PGMEI"
-                >
-                  <Upload className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Importar Extrato</span>
-                </button>
-
-                <button
-                  onClick={() => setIsManualModalOpen(true)}
-                  className="flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 transition"
-                  title="Adicionar guia com valores personalizados"
-                >
-                  <Plus className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>+ Guia</span>
-                </button>
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <a href={PGMEI_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-2 text-xs font-medium rounded-xl border border-border hover:bg-muted transition">
+              PGMEI <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            <a href={DASN_SIMEI_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-2 text-xs font-medium rounded-xl border border-border hover:bg-muted transition">
+              DASN-SIMEI <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            <button
+              onClick={() => setImportarAberto(v => !v)}
+              className="flex items-center gap-1 px-3 py-2 text-xs font-medium rounded-xl border border-border hover:bg-muted transition cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" /> Importar extrato
+            </button>
+            <button
+              onClick={consultar}
+              disabled={Boolean(job) || Boolean(roboIndisponivel)}
+              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl bg-primary hover:bg-primary-800 text-primary-foreground transition disabled:opacity-50 cursor-pointer"
+            >
+              {job ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+              {job ? 'Consultando...' : resultado ? 'Consultar de novo' : 'Consultar PGMEI agora'}
+            </button>
           </div>
+        </div>
 
-          {/* Modal / Caixa de Importação de Extrato do PGMEI */}
-          {isImportOpen && (
-            <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-3 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Upload className="w-4 h-4 text-blue-700" />
-                  <h4 className="font-bold text-xs text-blue-900">
-                    Importar Extrato Oficial do PGMEI (Texto ou Tabela Copiada)
-                  </h4>
-                </div>
-                <button
-                  onClick={() => setIsImportOpen(false)}
-                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold"
-                >
-                  Fechar
-                </button>
-              </div>
-              <p className="text-[11px] text-blue-800">
-                Acesse a tela do PGMEI, selecione a tabela de competências/débitos, copie (Ctrl+C) e cole abaixo (Ctrl+V). Nosso leitor identifica automaticamente todos os meses, juros, multas e valores oficiais!
-              </p>
-              <textarea
-                rows={4}
-                value={pastedExtrato}
-                onChange={e => setPastedExtrato(e.target.value)}
-                placeholder="Exemplo colado:&#10;01/2026 - 20/02/2026 - Principal: R$ 75,60 - Multa: R$ 12,40 - Total: R$ 88,00&#10;12/2025 - 20/01/2026 - Principal: R$ 70,60 - Multa: R$ 18,20 - Total: R$ 88,80..."
-                className="w-full p-3 rounded-xl bg-white border border-blue-300 text-xs font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        {!job && (
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+            <label className="flex items-center gap-1.5">
+              Anos a verificar:
+              <select value={maxAnos} onChange={e => setMaxAnos(Number(e.target.value))} className="px-2 py-1 rounded-lg border border-border bg-white text-foreground">
+                <option value={3}>3 últimos</option>
+                <option value={6}>6 últimos</option>
+                <option value={10}>10 últimos</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={verificarDasn} onChange={e => setVerificarDasn(e.target.checked)} className="accent-[var(--color-primary)]" />
+              Verificar também as declarações no DASN-SIMEI
+            </label>
+          </div>
+        )}
+
+        {roboIndisponivel && (
+          <div className="p-3 rounded-xl bg-accent-50 border border-accent-200 text-accent-800 text-xs">
+            O navegador (Chromium) usado pelo robô não foi encontrado no servidor. Use “Importar extrato” ou instale o Chromium / defina CHROME_PATH.
+          </div>
+        )}
+
+        {job && (
+          <div className="p-4 rounded-xl bg-primary-50 border border-primary-100 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-primary font-medium">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {job.status === 'na_fila' ? 'Na fila (uma consulta por vez)...' : job.etapa}
+            </div>
+            <div className="h-1.5 rounded-full bg-primary-100 overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-500"
+                style={{ width: job.total ? `${Math.max(8, (job.atual / job.total) * 100)}%` : '12%' }}
               />
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setIsImportOpen(false)}
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleImportExtrato}
-                  disabled={parsingExtrato || !pastedExtrato.trim()}
-                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs transition disabled:opacity-50"
-                >
-                  {parsingExtrato ? 'Processando...' : 'Carregar Todas as Guias'}
-                </button>
-              </div>
             </div>
-          )}
+            <p className="text-[11px] text-muted-foreground">O robô navega no PGMEI como uma pessoa faria; costuma levar de 30 s a 2 min.</p>
+          </div>
+        )}
 
-          {/* Modal de Adição Manual de Guia */}
-          {isManualModalOpen && (
-            <form onSubmit={handleAddManualDebt} className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200 space-y-3 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-xs text-emerald-900 flex items-center gap-1.5">
-                  <Plus className="w-4 h-4 text-emerald-700" />
-                  Adicionar Guia de Débito Real do PGMEI
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => setIsManualModalOpen(false)}
-                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold"
-                >
-                  Fechar
+        {erro && (
+          <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p>{erro.texto}</p>
+              {erro.bloqueado && (
+                <button onClick={() => setImportarAberto(true)} className="font-semibold underline cursor-pointer">
+                  Importar a tabela do PGMEI manualmente
                 </button>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Competência (MM/AAAA)</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="05/2024"
-                    value={manualComp}
-                    onChange={e => setManualComp(e.target.value)}
-                    className="w-full p-2 rounded-lg bg-white border border-slate-300 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Vencimento Original</label>
-                  <input
-                    type="text"
-                    placeholder="20/06/2024"
-                    value={manualVenc}
-                    onChange={e => setManualVenc(e.target.value)}
-                    className="w-full p-2 rounded-lg bg-white border border-slate-300 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Valor Principal (R$)</label>
-                  <input
-                    type="text"
-                    required
-                    value={manualPrincipal}
-                    onChange={e => setManualPrincipal(e.target.value)}
-                    className="w-full p-2 rounded-lg bg-white border border-slate-300 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Multa e Juros (R$)</label>
-                  <input
-                    type="text"
-                    required
-                    value={manualMultaJuros}
-                    onChange={e => setManualMultaJuros(e.target.value)}
-                    className="w-full p-2 rounded-lg bg-white border border-slate-300 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Situação Oficial</label>
-                  <select
-                    value={manualSituacao}
-                    onChange={e => setManualSituacao(e.target.value)}
-                    className="w-full p-2 rounded-lg bg-white border border-slate-300 text-xs"
-                  >
-                    <option value="DEVEDOR">DEVEDOR</option>
-                    <option value="EM COBRANÇA NA RFB">EM COBRANÇA NA RFB</option>
-                    <option value="INSCRITO EM DÍVIDA ATIVA DA UNIÃO (PGFN)">INSCRITO EM DÍVIDA ATIVA (PGFN)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsManualModalOpen(false)}
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-700 bg-white"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs"
-                >
-                  Salvar Guia
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* Tabela Detalhada de Todas as Competências em Atraso */}
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-              <span className="font-bold text-xs text-slate-700 uppercase tracking-wider">
-                Discriminação Completa das Competências em Atraso
-              </span>
-              <span className="text-[11px] text-slate-500">
-                Total: <strong>{data.competencias_pendentes.length} guias</strong>
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-200 text-xs">
-                <thead className="bg-slate-100/60 font-semibold text-slate-600">
-                  <tr>
-                    <th className="px-4 py-2.5 text-left">Competência</th>
-                    <th className="px-4 py-2.5 text-left">Vencimento</th>
-                    <th className="px-4 py-2.5 text-right">Principal</th>
-                    <th className="px-4 py-2.5 text-right">Multa & Juros</th>
-                    <th className="px-4 py-2.5 text-right">Total a Pagar</th>
-                    <th className="px-4 py-2.5 text-center">Situação Legal</th>
-                    <th className="px-4 py-2.5 text-center">Guia DAS</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200/80 bg-white">
-                  {data.competencias_pendentes.map((guia, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/80 transition">
-                      <td className="px-4 py-3 font-mono font-bold text-slate-800">
-                        {guia.periodo}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {guia.vencimento}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-slate-700">
-                        {formatCurrency(guia.principal)}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-rose-600 font-semibold">
-                        +{formatCurrency(guia.multa_juros)}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono font-bold text-slate-900 bg-rose-50/30">
-                        {formatCurrency(guia.total)}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          guia.situacao.includes('DÍVIDA ATIVA') || guia.situacao.includes('PGFN')
-                            ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                            : guia.situacao.includes('COBRANÇA')
-                            ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                            : 'bg-orange-100 text-orange-800 border border-orange-200'
-                        }`}>
-                          {guia.situacao}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <button
-                          onClick={() => {
-                            if (guia.linha_digitavel) {
-                              navigator.clipboard.writeText(guia.linha_digitavel);
-                              alert(`Linha digitável copiada:\n${guia.linha_digitavel}`);
-                            } else {
-                              alert(`Acesse o PGMEI oficial para emissão do boleto da competência ${guia.periodo}.`);
-                            }
-                          }}
-                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] transition inline-flex items-center gap-1"
-                          title="Copiar código de barras da guia"
-                        >
-                          <Receipt className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Linha DAS</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {aviso && (
+          <div className="p-3 rounded-xl bg-primary-50 border border-primary-200 text-primary text-xs flex items-center gap-2">
+            <Check className="w-4 h-4" /> {aviso}
+          </div>
+        )}
+
+        {importarAberto && (
+          <div className="p-4 rounded-2xl bg-muted/70 border border-border space-y-3">
+            <p className="text-xs text-muted-foreground">
+              No PGMEI, abra “Emitir Guia de Pagamento (DAS)”, escolha o ano, selecione a tabela inteira com o mouse, copie (Ctrl+C) e cole abaixo.
+              Repita para cada ano. Para as declarações, copie a lista de declarações transmitidas do DASN-SIMEI (opcional).
+            </p>
+            <textarea
+              rows={5}
+              value={textoExtrato}
+              onChange={e => setTextoExtrato(e.target.value)}
+              placeholder={'Fevereiro/2026\tNão\tDevedor\tNão\t81,05\t16,21\t4,86\t102,12\t20/03/2026\t30/09/2026'}
+              className="w-full p-3 rounded-xl bg-white border border-border text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary-200"
+            />
+            <textarea
+              rows={2}
+              value={textoDeclaracoes}
+              onChange={e => setTextoDeclaracoes(e.target.value)}
+              placeholder="(opcional) Lista de declarações do DASN-SIMEI — ex.: 2024  Original  Transmitida em 10/05/2025"
+              className="w-full p-3 rounded-xl bg-white border border-border text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary-200"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setImportarAberto(false)} className="px-3 py-1.5 rounded-lg border border-border text-xs bg-white cursor-pointer">
+                Cancelar
+              </button>
+              <button
+                onClick={importar}
+                disabled={importando || (!textoExtrato.trim() && !textoDeclaracoes.trim())}
+                className="px-4 py-1.5 rounded-lg bg-primary hover:bg-primary-800 text-primary-foreground font-semibold text-xs transition disabled:opacity-50 cursor-pointer"
+              >
+                {importando ? 'Importando...' : 'Importar'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {carregando && !resultado && <p className="text-xs text-muted-foreground">Carregando última consulta...</p>}
+
+        {!carregando && !resultado && !job && (
+          <div className="p-6 rounded-2xl border border-dashed border-border text-center space-y-2">
+            <Receipt className="w-8 h-8 text-accent mx-auto" />
+            <p className="text-sm font-semibold text-foreground">Nenhuma consulta do MEI ainda</p>
+            <p className="text-xs text-muted-foreground max-w-lg mx-auto">
+              Clique em “Consultar PGMEI agora” para listar as competências em aberto com o valor de cada uma (principal, multa, juros e total) e
+              descobrir declarações DASN-SIMEI em atraso.
+            </p>
+          </div>
+        )}
+
+        {resultado && r && (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-5 rounded-2xl bg-primary text-primary-foreground sm:col-span-2 lg:col-span-1">
+                <div className="text-xs font-medium text-primary-200">Total em aberto</div>
+                <div className="text-3xl font-serif font-semibold mt-1">{formatCurrency(r.totalGeral)}</div>
+                <div className="text-[11px] text-primary-200 mt-1">
+                  {r.qtdEmAberto + r.qtdDividaAtiva} competência(s)
+                  {r.qtdSemValor ? ` · ${r.qtdSemValor} sem valor informado` : ''}
+                </div>
+              </div>
+              <div className="p-5 rounded-2xl border border-border">
+                <div className="text-xs font-medium text-muted-foreground">Vencidas</div>
+                <div className="text-2xl font-serif font-semibold text-rose-700 mt-1">{formatCurrency(r.totalVencido)}</div>
+                <div className="text-[11px] text-muted-foreground mt-1">{r.qtdVencidas} guia(s) com multa e juros</div>
+              </div>
+              <div className="p-5 rounded-2xl border border-border">
+                <div className="text-xs font-medium text-muted-foreground">Dívida ativa (PGFN)</div>
+                <div className="text-2xl font-serif font-semibold text-foreground mt-1">{formatCurrency(r.totalDividaAtiva)}</div>
+                <div className="text-[11px] text-muted-foreground mt-1">{r.qtdDividaAtiva} competência(s) — pagar pela PGFN</div>
+              </div>
+              <div className="p-5 rounded-2xl border border-border">
+                <div className="text-xs font-medium text-muted-foreground">DASN-SIMEI em atraso</div>
+                <div className={`text-2xl font-serif font-semibold mt-1 ${r.declaracoesPendentes.length ? 'text-accent-700' : 'text-emerald-700'}`}>
+                  {r.declaracoesPendentes.length || 'Nenhuma'}
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-1">
+                  {r.declaracoesPendentes.length ? `Anos: ${r.declaracoesPendentes.join(', ')}` : 'entre os anos verificados'}
+                </div>
+              </div>
+            </div>
+
+            <div className="border border-border rounded-xl overflow-hidden">
+              <div className="bg-muted/70 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-xs text-foreground uppercase tracking-wide">
+                  {mostrarTodas ? 'Todas as competências verificadas' : 'Competências em aberto'}
+                </span>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                  <input type="checkbox" checked={mostrarTodas} onChange={e => setMostrarTodas(e.target.checked)} />
+                  Mostrar também as pagas
+                </label>
+              </div>
+
+              {competenciasVisiveis.length === 0 ? (
+                <div className="p-6 text-center text-sm text-emerald-700 flex items-center justify-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" /> Nenhuma guia em aberto nos anos verificados.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="text-muted-foreground">
+                      <tr className="border-b border-border">
+                        <th className="px-4 py-2.5 text-left font-medium">Competência</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Vencimento</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Situação</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Principal</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Multa</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Juros</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {competenciasVisiveis.map(c => (
+                        <tr key={c.periodoApuracao} className="hover:bg-muted/50">
+                          <td className="px-4 py-2.5 font-mono font-semibold text-foreground">{c.periodo}</td>
+                          <td className="px-4 py-2.5 text-muted-foreground">{c.vencimento || '—'}</td>
+                          <td className="px-4 py-2.5">
+                            <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${SITUACAO[c.situacao].classe}`} title={c.mensagem}>
+                              {SITUACAO[c.situacao].rotulo}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono">{valor(c.principal)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-rose-700">{valor(c.multa)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-rose-700">{valor(c.juros)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono font-semibold text-foreground">{valor(c.total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {!mostrarTodas && (
+                      <tfoot>
+                        <tr className="border-t-2 border-border bg-muted/50">
+                          <td colSpan={6} className="px-4 py-2.5 text-right font-semibold text-foreground">
+                            Total em aberto
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono font-bold text-foreground">{formatCurrency(r.totalGeral)}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground -mt-3">
+              Multa e juros valem para pagamento até a “data de acolhimento” do PGMEI; depois disso o valor é recalculado.
+            </p>
+
+            <div className="border border-border rounded-xl overflow-hidden">
+              <div className="bg-muted/70 px-4 py-3 flex items-center gap-2">
+                <FileWarning className="w-4 h-4 text-accent-700" />
+                <span className="font-semibold text-xs text-foreground uppercase tracking-wide">Declarações anuais (DASN-SIMEI)</span>
+              </div>
+              {resultado.declaracoes.length === 0 ? (
+                <p className="p-4 text-xs text-muted-foreground">Nenhum ano-calendário exigível ainda.</p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {resultado.declaracoes.map(d => (
+                    <li key={d.ano} className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-semibold text-foreground w-10">{d.ano}</span>
+                        <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${DECLARACAO[d.situacao].classe}`}>
+                          {DECLARACAO[d.situacao].rotulo}
+                        </span>
+                        <span className="text-muted-foreground">
+                          prazo {d.prazo}
+                          {d.fonte ? ` · fonte: ${d.fonte}` : ''}
+                          {d.observacao ? ` · ${d.observacao}` : ''}
+                        </span>
+                      </div>
+                      <div className="flex gap-1">
+                        {d.situacao !== 'ENTREGUE' && (
+                          <button onClick={() => marcar(d.ano, 'ENTREGUE')} className="px-2 py-1 rounded-lg border border-border hover:bg-muted cursor-pointer">
+                            Marcar entregue
+                          </button>
+                        )}
+                        {d.situacao !== 'PENDENTE' && (
+                          <button onClick={() => marcar(d.ano, 'PENDENTE')} className="px-2 py-1 rounded-lg border border-border hover:bg-muted cursor-pointer">
+                            Marcar em atraso
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="px-4 py-2.5 text-[11px] text-muted-foreground border-t border-border">
+                DASN-SIMEI entregue fora do prazo gera multa (MAED) de no mínimo R$ 50,00 por declaração.
+              </p>
+            </div>
+
+            {resultado.avisos.length > 0 && (
+              <div className="p-3 rounded-xl bg-accent-50 border border-accent-200 text-accent-800 text-xs space-y-1">
+                {resultado.avisos.map((a, i) => (
+                  <p key={i} className="flex gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {a}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <button onClick={copiarResumo} className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl border border-border hover:bg-muted transition cursor-pointer">
+                <ClipboardCopy className="w-3.5 h-3.5 text-primary" /> Copiar resumo para o cliente
+              </button>
+              <button onClick={salvarRelatorio} className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl border border-border hover:bg-muted transition cursor-pointer">
+                <HardDrive className="w-3.5 h-3.5 text-primary" /> Salvar relatório em Arquivos
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };

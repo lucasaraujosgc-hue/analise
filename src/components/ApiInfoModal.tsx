@@ -1,118 +1,108 @@
 import React from 'react';
-import { X, Database, Phone, Mail, CheckCircle2, AlertTriangle, HardDrive, Shield } from 'lucide-react';
+import { X, Database, Phone, Receipt, FileCheck, HardDrive } from 'lucide-react';
 
 interface ApiInfoModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+const FONTES_CNPJ = [
+  { nome: 'MinhaReceita', desc: 'Dados abertos da RFB. Base cadastral principal, mas oculta e-mail e, para MEI, telefone e endereço.' },
+  { nome: 'BrasilAPI', desc: 'Mesmo formato dos dados abertos; usada como reserva.' },
+  { nome: 'OpenCNPJ', desc: 'Dados abertos com telefones estruturados.' },
+  { nome: 'CNPJ.ws', desc: 'Telefone com DDD, e-mail e inscrições estaduais (limite de 3 consultas/min).' },
+  { nome: 'CNPJá (open)', desc: 'Telefones e e-mails (limite de 5 consultas/min).' },
+  { nome: 'ReceitaWS', desc: 'Lê o comprovante de inscrição: costuma trazer telefone e e-mail (limite de 3 consultas/min).' },
+];
+
 export const ApiInfoModal: React.FC<ApiInfoModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-slate-100">
-        {/* Header */}
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-primary-950/60 backdrop-blur-sm">
+      <div className="bg-white border border-border rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-xl overflow-hidden">
+        <div className="p-5 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+            <div className="p-2.5 rounded-xl bg-primary-50 text-primary">
               <Database className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-base text-white">APIs da Receita Federal & Diagnóstico de Dados</h3>
-              <p className="text-xs text-slate-400">Arquitetura de dados, telefones, e-mails e montagem Docker</p>
+              <h3 className="font-semibold text-base text-foreground">De onde vêm os dados</h3>
+              <p className="text-xs text-muted-foreground">Todas as fontes são gratuitas</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-          >
+          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer" aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6 overflow-y-auto space-y-6 text-xs text-slate-300">
-          {/* 1. Quais APIs são utilizadas */}
-          <div className="space-y-3">
-            <h4 className="font-bold text-sm text-emerald-400 flex items-center gap-2">
-              <Database className="w-4 h-4 text-emerald-400" />
-              1. Quais APIs estamos usando para consultar a Receita Federal?
+        <div className="p-6 overflow-y-auto space-y-6 text-xs text-muted-foreground">
+          <section className="space-y-3">
+            <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
+              <Database className="w-4 h-4 text-primary" /> Cadastro do CNPJ
             </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700">
-                <span className="font-bold text-white block mb-1">Minha Receita (RFB)</span>
-                <p className="text-[11px] text-slate-400">
-                  Base pública espelhada mensalmente dos arquivos abertos da Receita Federal do Brasil (CNPJ Open Data).
-                </p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700">
-                <span className="font-bold text-white block mb-1">BrasilAPI</span>
-                <p className="text-[11px] text-slate-400">
-                  API pública de alta resiliência mantida pela comunidade brasileira com múltiplos espelhos.
-                </p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700">
-                <span className="font-bold text-white block mb-1">CNPJ.ws / RFB</span>
-                <p className="text-[11px] text-slate-400">
-                  Serviço de dados cadastrais de estabelecimentos e quadro societário da RFB.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* 2. Por que o telefone e e-mail não estavam vindo */}
-          <div className="space-y-3 p-4 rounded-xl bg-slate-800/50 border border-slate-700/80">
-            <h4 className="font-bold text-sm text-amber-400 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-400" />
-              2. Por que o Telefone e o E-mail não estavam vindo?
-            </h4>
-            
-            <div className="space-y-3 text-slate-300 text-xs">
-              <div className="flex items-start gap-2.5">
-                <Phone className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-white">Telefone:</strong> No banco oficial da Receita Federal, o campo <code className="px-1.5 py-0.5 rounded bg-slate-950 text-emerald-400 font-mono">ddd_telefone_1</code> frequentemente vem com 10 ou 11 dígitos concatenados (ex: <code className="text-slate-200 font-mono">1122222222</code>). Uma condição de máscara anterior descartava o valor se o telefone 2 não existisse. Corrigimos o algoritmo de parsing para normalizar automaticamente números com DDD no formato brasileiro <code className="text-emerald-400 font-mono">(XX) XXXXX-XXXX</code> e checar múltiplos campos (<code className="font-mono">ddd_telefone_1</code>, <code className="font-mono">telefone_1</code>, <code className="font-mono">telefone_2</code>).
+            <p>As fontes abaixo são consultadas ao mesmo tempo e os resultados são unidos. Se uma falhar ou atingir o limite, as outras completam.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {FONTES_CNPJ.map(f => (
+                <div key={f.nome} className="p-3 rounded-xl bg-muted/70">
+                  <span className="font-semibold text-foreground block">{f.nome}</span>
+                  <span className="text-[11px]">{f.desc}</span>
                 </div>
-              </div>
-
-              <div className="flex items-start gap-2.5">
-                <Mail className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-white">E-mail:</strong> No Brasil, milhares de empresas deixam o campo de e-mail em branco na abertura ou inserem o e-mail do contador (que às vezes é removido por privacidade). Nosso extrator agora faz a varredura em <code className="font-mono">email</code>, <code className="font-mono">correio_eletronico</code> e <code className="font-mono">estabelecimento.email</code>. Além disso, permitimos que você edite ou cadastre contatos diretamente na ficha da empresa e na Carteira Multi-CNPJ!
-                </div>
-              </div>
+              ))}
             </div>
-          </div>
+          </section>
 
-          {/* 3. Como funciona a pasta montada no Docker (/app/storage) */}
-          <div className="space-y-3">
-            <h4 className="font-bold text-sm text-cyan-400 flex items-center gap-2">
-              <HardDrive className="w-4 h-4 text-cyan-400" />
-              3. Montagem dos PDFs no Docker (Volume Host & Container)
+          <section className="space-y-2 p-4 rounded-xl bg-accent-50 border border-accent-200">
+            <h4 className="font-semibold text-sm text-accent-800 flex items-center gap-2">
+              <Phone className="w-4 h-4" /> Por que telefone e e-mail não apareciam
             </h4>
-            <p className="text-slate-400 text-xs">
-              Ao gerar ou consultar certidões (CND) ou guias DAS do MEI, você pode salvar o arquivo diretamente no volume do Docker. Todos os PDFs ficam disponíveis na sua máquina física em tempo real:
+            <p className="text-accent-800">
+              O sistema só consultava a MinhaReceita e parava ali. A instância pública dela roda em modo de privacidade: remove o e-mail de todas as
+              empresas e, para empresário individual (MEI), também telefone e logradouro. Agora as outras fontes são sempre consultadas e os contatos
+              são mesclados. Se nenhuma fonte tiver o dado, você pode informá-lo em “Contatos” — ele é mantido nas próximas atualizações.
             </p>
-            <div className="p-3 rounded-xl bg-slate-950 font-mono text-[11px] text-emerald-400 border border-slate-800 space-y-1">
-              <div># No docker-compose.yml:</div>
-              <div className="text-slate-300">volumes:</div>
-              <div className="text-emerald-300 pl-4">- ./storage:/app/storage</div>
-              <div className="text-slate-300"># Subpastas criadas automaticamente:</div>
-              <div className="text-slate-400 pl-4">./storage/cnds/ (Certidões Federal e Estadual)</div>
-              <div className="text-slate-400 pl-4">./storage/guias_mei/ (Boletos DAS e Extratos)</div>
-              <div className="text-slate-400 pl-4">./storage/relatorios/ (Dossiês de Compliance)</div>
-            </div>
-          </div>
+          </section>
+
+          <section className="space-y-2">
+            <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-primary" /> MEI: DAS em aberto e DASN-SIMEI
+            </h4>
+            <p>
+              Um robô abre o portal público do PGMEI (o mesmo que o MEI usa, sem certificado digital), lê a tabela de competências de cada ano
+              — situação, principal, multa, juros, total e vencimento — e os avisos de declaração não entregue. Em seguida consulta o DASN-SIMEI.
+              Baseado no projeto de código aberto <span className="font-mono text-foreground">engmsilva/scraping-das-mei</span>.
+            </p>
+            <p>
+              O portal tem verificação anti-robô. Se ela bloquear a consulta, tente novamente mais tarde, rode o servidor com
+              <code className="mx-1 px-1 rounded bg-muted text-foreground">PGMEI_HEADLESS=false</code>para resolver o captcha na tela, ou copie e cole a
+              tabela do PGMEI em “Importar extrato”.
+            </p>
+          </section>
+
+          <section className="space-y-2">
+            <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
+              <FileCheck className="w-4 h-4 text-primary" /> Certidões (CND)
+            </h4>
+            <p>
+              Federal: servicos.receitafederal.gov.br/servico/certidoes/#/home/cnpj. Estadual: portal da SEFAZ da UF da empresa. O PDF enviado é lido e
+              classificado em Negativa, Positiva com efeito de negativa ou Positiva, com validade e conferência do CNPJ.
+            </p>
+          </section>
+
+          <section className="space-y-2">
+            <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
+              <HardDrive className="w-4 h-4 text-primary" /> Arquivos
+            </h4>
+            <p>
+              CNDs, relatórios do MEI e dossiês ficam em <code className="px-1 rounded bg-muted text-foreground">./storage</code> (volume do Docker
+              montado em <code className="px-1 rounded bg-muted text-foreground">/app/storage</code>).
+            </p>
+          </section>
         </div>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-slate-800 flex justify-end bg-slate-900">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition"
-          >
-            Entendido
+        <div className="p-4 border-t border-border flex justify-end">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-primary hover:bg-primary-800 text-primary-foreground font-semibold text-xs transition cursor-pointer">
+            Entendi
           </button>
         </div>
       </div>

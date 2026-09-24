@@ -1,1 +1,72 @@
 @import "tailwindcss";
+
+/* Identidade visual Vírgula, Contábil (cores e fontes do logo). */
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Fraunces', Georgia, serif;
+
+  /* Verde Vírgula — cor principal do logo */
+  --color-primary: oklch(0.36 0.06 165);
+  --color-primary-foreground: oklch(0.985 0.006 90);
+  --color-primary-50: oklch(0.97 0.014 165);
+  --color-primary-100: oklch(0.935 0.028 165);
+  --color-primary-200: oklch(0.87 0.045 165);
+  --color-primary-300: oklch(0.77 0.06 165);
+  --color-primary-400: oklch(0.63 0.07 165);
+  --color-primary-500: oklch(0.51 0.07 165);
+  --color-primary-600: oklch(0.43 0.065 165);
+  --color-primary-700: oklch(0.36 0.06 165);
+  --color-primary-800: oklch(0.3 0.05 165);
+  --color-primary-900: oklch(0.24 0.04 165);
+  --color-primary-950: oklch(0.18 0.03 165);
+
+  /* Laranja da vírgula — destaque */
+  --color-accent: oklch(0.72 0.14 55);
+  --color-accent-foreground: oklch(0.2 0.03 60);
+  --color-accent-50: oklch(0.975 0.022 70);
+  --color-accent-100: oklch(0.945 0.045 65);
+  --color-accent-200: oklch(0.89 0.08 60);
+  --color-accent-300: oklch(0.82 0.11 58);
+  --color-accent-400: oklch(0.77 0.13 56);
+  --color-accent-500: oklch(0.72 0.14 55);
+  --color-accent-600: oklch(0.63 0.14 50);
+  --color-accent-700: oklch(0.53 0.13 45);
+  --color-accent-800: oklch(0.43 0.11 42);
+
+  /* Neutros quentes */
+  --color-background: oklch(0.985 0.006 90);
+  --color-foreground: oklch(0.24 0.03 165);
+  --color-muted: oklch(0.96 0.01 90);
+  --color-muted-foreground: oklch(0.48 0.02 160);
+  --color-border: oklch(0.88 0.018 90);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-serif);
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-200);
+    color: var(--color-accent-foreground);
+  }
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+}

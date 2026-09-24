@@ -2,40 +2,50 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse');
+import { PDFParse } from 'pdf-parse';
+import { isValidCnpj, lookupCnpj, NAO_CADASTRADO, sanitizeCnpj } from './server/cnpjProviders';
+import { classifyCndText, CND_FEDERAL_URL } from './server/cnd';
+import {
+  anosDasnExigiveis,
+  CompetenciaMei,
+  DeclaracaoMei,
+  montarDeclaracoes,
+  parseDeclaracoesEntregues,
+  parseExtratoPgmei,
+  resumir,
+  ResultadoMei,
+  SituacaoDeclaracao,
+} from './server/mei';
+import { consultarPgmei, localizarChrome, PgmeiBloqueadoError } from './server/pgmeiScraper';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-// Setup directories for Docker volume mounts
+// Diretórios montados como volume no Docker
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, 'data');
 const STORAGE_DIR = process.env.STORAGE_DIR || path.resolve(__dirname, 'storage');
+const MEI_DIR = path.join(DATA_DIR, 'mei');
+const STORAGE_SUBFOLDERS = [
+  { name: 'cnds', label: 'CNDs (Certidões Negativas/Positivas)' },
+  { name: 'guias_mei', label: 'Guias DAS do MEI & Extratos' },
+  { name: 'relatorios', label: 'Relatórios Executivos & Dossiês' },
+];
 
-const CND_STORAGE = path.join(STORAGE_DIR, 'cnds');
-const PGMEI_STORAGE = path.join(STORAGE_DIR, 'guias_mei');
-const RELATORIOS_STORAGE = path.join(STORAGE_DIR, 'relatorios');
-
-for (const dir of [DATA_DIR, STORAGE_DIR, CND_STORAGE, PGMEI_STORAGE, RELATORIOS_STORAGE]) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+for (const dir of [DATA_DIR, STORAGE_DIR, MEI_DIR, ...STORAGE_SUBFOLDERS.map(s => path.join(STORAGE_DIR, s.name))]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 const CARTEIRA_FILE = path.join(DATA_DIR, 'carteira.json');
 
-// Initialize carteira storage with defaults if not existing
 function loadCarteira(): any[] {
   try {
     if (fs.existsSync(CARTEIRA_FILE)) {
-      const content = fs.readFileSync(CARTEIRA_FILE, 'utf-8');
-      return JSON.parse(content) || [];
+      return JSON.parse(fs.readFileSync(CARTEIRA_FILE, 'utf-8')) || [];
     }
   } catch (err) {
     console.error('Erro ao carregar carteira.json:', err);
@@ -51,222 +61,40 @@ function saveCarteira(items: any[]) {
   }
 }
 
-// In-memory cache for fast response and persistence
 let carteiraCache = loadCarteira();
 
-// Seed initial default demo companies if empty
-if (carteiraCache.length === 0) {
-  carteiraCache = [
-    {
-      cnpj: '48912345000190',
-      razao_social: 'LUCAS CARVALHO SERVICOS DIGITAIS E CONSULTORIA MEI',
-      nome_fantasia: 'CARBONO TECH SOLUTIONS',
-      situacao_cadastral: 'ATIVA',
-      porte: 'MICRO EMPRESA',
-      opcao_pelo_mei: true,
-      opcao_pelo_simples: true,
-      email: 'lucas.carbonotech@gmail.com',
-      telefone: '(11) 98765-4321',
-      natureza_juridica: '213-5 - Empresário (Individual)',
-      data_inicio_atividade: '2022-10-15',
-      capital_social: 10000,
-      cnae_fiscal: {
-        codigo: '6202300',
-        descricao: 'Desenvolvimento e licenciamento de programas de computador customizáveis',
-      },
-      cnaes_secundarios: [
-        { codigo: '6201501', descricao: 'Desenvolvimento de programas de computador sob encomenda' },
-        { codigo: '6209100', descricao: 'Suporte técnico, manutenção e outros serviços em tecnologia da informação' },
-      ],
-      endereco: {
-        logradouro: 'Avenida Paulista',
-        numero: '1374',
-        complemento: 'Andar 11 Sala 112',
-        bairro: 'Bela Vista',
-        municipio: 'São Paulo',
-        uf: 'SP',
-        cep: '01310100',
-        endereco_completo: 'Avenida Paulista, 1374 - Andar 11 Sala 112, Bela Vista - São Paulo/SP, CEP: 01310100',
-      },
-      qsa: [
-        {
-          nome_socio: 'LUCAS CARVALHO',
-          qualificacao_socio: 'Titular / Empresário Individual',
-          faixa_etaria: '25 a 35 anos',
-        }
-      ],
-      pendenciasResumo: {
-        cndFederal: 'NEGATIVA',
-        cndEstadual: 'NEGATIVA',
-        totalDebitosMei: 341.25,
-        guiasAtrasoMei: 4,
-        ultimaConsulta: new Date().toISOString(),
-      },
-      lastUpdated: new Date().toISOString(),
-    },
-    {
-      cnpj: '18236120000158',
-      razao_social: 'NU PAGAMENTOS S.A. - INSTITUICAO DE PAGAMENTO',
-      nome_fantasia: 'NUBANK',
-      situacao_cadastral: 'ATIVA',
-      porte: 'DEMAIS',
-      opcao_pelo_mei: false,
-      opcao_pelo_simples: false,
-      email: 'regulamentar@nubank.com.br',
-      telefone: '(11) 2222-2222',
-      natureza_juridica: '205-4 - Sociedade Anônima Fechada',
-      data_inicio_atividade: '2013-05-06',
-      capital_social: 3500000000,
-      cnae_fiscal: {
-        codigo: '6499999',
-        descricao: 'Outras atividades de serviços financeiros não especificadas anteriormente',
-      },
-      cnaes_secundarios: [
-        { codigo: '6619399', descricao: 'Outras atividades auxiliares dos serviços financeiros' },
-        { codigo: '6202300', descricao: 'Desenvolvimento e licenciamento de programas customizáveis' },
-      ],
-      endereco: {
-        logradouro: 'Rua Capote Valente',
-        numero: '39',
-        complemento: '',
-        bairro: 'Pinheiros',
-        municipio: 'São Paulo',
-        uf: 'SP',
-        cep: '05409000',
-        endereco_completo: 'Rua Capote Valente, 39, Pinheiros - São Paulo/SP, CEP: 05409000',
-      },
-      qsa: [
-        { nome_socio: 'DAVID VELEZ OSORNO', qualificacao_socio: 'Diretor Presidente' },
-        { nome_socio: 'CRISTINA JUNQUEIRA', qualificacao_socio: 'Diretor Executivo' },
-      ],
-      pendenciasResumo: {
-        cndFederal: 'NEGATIVA',
-        cndEstadual: 'NEGATIVA',
-        totalDebitosMei: 0,
-        guiasAtrasoMei: 0,
-        ultimaConsulta: new Date().toISOString(),
-      },
-      lastUpdated: new Date().toISOString(),
-    }
-  ];
-  saveCarteira(carteiraCache);
+function findEmpresa(cnpj: string) {
+  const clean = sanitizeCnpj(cnpj);
+  return carteiraCache.find(e => sanitizeCnpj(e.cnpj) === clean);
+}
+
+// Período de enquadramento no SIMEI. Cadastros antigos não guardavam a data de
+// opção; nesse caso a data de abertura é o limite (não há MEI antes dela).
+function datasMei(empresa: any): { dataOpcaoMei?: string; dataExclusaoMei?: string } {
+  return {
+    dataOpcaoMei: empresa?.data_opcao_pelo_mei || empresa?.data_inicio_atividade || undefined,
+    dataExclusaoMei: empresa?.data_exclusao_do_mei || undefined,
+  };
+}
+
+function temValor(v: unknown): v is string {
+  return typeof v === 'string' && v.trim() !== '' && v !== NAO_CADASTRADO;
 }
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Helper to sanitize CNPJ
-function sanitizeCnpj(cnpj: string): string {
-  return (cnpj || '').replace(/\D/g, '');
-}
-
-// Format phone numbers reliably from different RFB schemas
-function formatPhone(clean: string): string {
-  if (clean.length === 11) {
-    return `(${clean.slice(0, 2)}) ${clean.slice(2, 7)}-${clean.slice(7)}`;
-  }
-  if (clean.length === 10) {
-    return `(${clean.slice(0, 2)}) ${clean.slice(2, 6)}-${clean.slice(6)}`;
-  }
-  if (clean.length === 8) {
-    return `${clean.slice(0, 4)}-${clean.slice(4)}`;
-  }
-  if (clean.length === 9) {
-    return `${clean.slice(0, 5)}-${clean.slice(5)}`;
-  }
-  return clean;
-}
-
-function extractPhones(data: any): { telefone: string; telefone_secundario?: string } {
-  const candidates: string[] = [];
-
-  // Check ddd_telefone_1 (MinhaReceita often returns 1122222222 or ddd in one string)
-  if (data.ddd_telefone_1) {
-    const raw = String(data.ddd_telefone_1).replace(/\D/g, '');
-    if (raw.length >= 8) candidates.push(raw);
-  }
-
-  // Check telefone_1 with separate ddd
-  if (data.telefone_1) {
-    const ddd = String(data.ddd_1 || data.ddd || data.ddd_telefone_1 || '').replace(/\D/g, '');
-    const tel = String(data.telefone_1).replace(/\D/g, '');
-    if (tel.length >= 8) {
-      candidates.push(ddd ? `${ddd.slice(0, 2)}${tel}` : tel);
-    }
-  }
-
-  // Check ddd_telefone_2
-  if (data.ddd_telefone_2) {
-    const raw = String(data.ddd_telefone_2).replace(/\D/g, '');
-    if (raw.length >= 8) candidates.push(raw);
-  }
-
-  // Check telefone_2
-  if (data.telefone_2) {
-    const ddd = String(data.ddd_2 || data.ddd || '').replace(/\D/g, '');
-    const tel = String(data.telefone_2).replace(/\D/g, '');
-    if (tel.length >= 8) {
-      candidates.push(ddd ? `${ddd.slice(0, 2)}${tel}` : tel);
-    }
-  }
-
-  // Check generic telefone
-  if (data.telefone) {
-    const raw = String(data.telefone).replace(/\D/g, '');
-    if (raw.length >= 8) candidates.push(raw);
-  }
-
-  // Check estabelecimento
-  if (data.estabelecimento) {
-    const est = data.estabelecimento;
-    if (est.ddd1 && est.telefone1) candidates.push(`${est.ddd1}${est.telefone1}`.replace(/\D/g, ''));
-    if (est.ddd2 && est.telefone2) candidates.push(`${est.ddd2}${est.telefone2}`.replace(/\D/g, ''));
-  }
-
-  const unique = Array.from(new Set(candidates.filter(c => c.length >= 8)));
-
-  if (unique.length === 0) {
-    return { telefone: 'Não cadastrado' };
-  }
-
-  return {
-    telefone: formatPhone(unique[0]),
-    telefone_secundario: unique[1] ? formatPhone(unique[1]) : undefined,
-  };
-}
-
-function extractEmail(data: any): string {
-  const candidates = [
-    data.email,
-    data.correio_eletronico,
-    data.estabelecimento?.email,
-    data.estabelecimento?.correio_eletronico,
-    data.contato?.email,
-  ];
-
-  for (const item of candidates) {
-    if (item && typeof item === 'string' && item !== 'null' && item !== 'undefined') {
-      const trimmed = item.trim().toLowerCase();
-      if (trimmed.includes('@') && trimmed.length > 5) {
-        return trimmed;
-      }
-    }
-  }
-
-  return 'Não cadastrado';
-}
-
 // ==========================================
-// 1. CARTEIRA MULTI-CNPJ ENDPOINTS
+// 1. CARTEIRA MULTI-CNPJ
 // ==========================================
 
-// List all companies in portfolio
 app.get('/api/carteira', (req, res) => {
   return res.json(carteiraCache);
 });
 
-// Add or update company in portfolio
+// Adiciona ou atualiza uma empresa. Na atualização preserva o que não veio da
+// Receita: pendências já apuradas e contatos informados manualmente.
 app.post('/api/carteira', (req, res) => {
   const empresa = req.body;
   if (!empresa || !empresa.cnpj) {
@@ -275,23 +103,32 @@ app.post('/api/carteira', (req, res) => {
 
   const clean = sanitizeCnpj(empresa.cnpj);
   const now = new Date().toISOString();
+  const existing = findEmpresa(clean);
 
-  const existingIndex = carteiraCache.findIndex(e => sanitizeCnpj(e.cnpj) === clean);
+  const manual = existing?.contatos_manuais || {};
+  const telefone = temValor(manual.telefone)
+    ? manual.telefone
+    : temValor(empresa.telefone) ? empresa.telefone : existing?.telefone || NAO_CADASTRADO;
+  const email = temValor(manual.email)
+    ? manual.email
+    : temValor(empresa.email) ? empresa.email : existing?.email || NAO_CADASTRADO;
+
   const updatedItem = {
+    ...existing,
     ...empresa,
     cnpj: clean,
+    telefone,
+    email,
+    contatos_manuais: existing?.contatos_manuais,
     lastUpdated: now,
-    pendenciasResumo: empresa.pendenciasResumo || {
+    pendenciasResumo: empresa.pendenciasResumo || existing?.pendenciasResumo || {
       cndFederal: 'NAO_CONSULTADA',
       cndEstadual: 'NAO_CONSULTADA',
-      totalDebitosMei: 0,
-      guiasAtrasoMei: 0,
-      ultimaConsulta: now,
-    }
+    },
   };
 
-  if (existingIndex >= 0) {
-    carteiraCache[existingIndex] = { ...carteiraCache[existingIndex], ...updatedItem };
+  if (existing) {
+    carteiraCache = carteiraCache.map(e => (sanitizeCnpj(e.cnpj) === clean ? updatedItem : e));
   } else {
     carteiraCache.unshift(updatedItem);
   }
@@ -300,7 +137,6 @@ app.post('/api/carteira', (req, res) => {
   return res.json({ success: true, item: updatedItem, carteira: carteiraCache });
 });
 
-// Delete company from portfolio
 app.delete('/api/carteira/:cnpj', (req, res) => {
   const clean = sanitizeCnpj(req.params.cnpj);
   carteiraCache = carteiraCache.filter(e => sanitizeCnpj(e.cnpj) !== clean);
@@ -308,265 +144,71 @@ app.delete('/api/carteira/:cnpj', (req, res) => {
   return res.json({ success: true, carteira: carteiraCache });
 });
 
-// Update pendencias status for a company in portfolio
 app.put('/api/carteira/:cnpj/pendencias', (req, res) => {
-  const clean = sanitizeCnpj(req.params.cnpj);
-  const { pendenciasResumo, telefone, email } = req.body;
-  const existing = carteiraCache.find(e => sanitizeCnpj(e.cnpj) === clean);
-
+  const existing = findEmpresa(req.params.cnpj);
   if (!existing) {
     return res.status(404).json({ error: 'Empresa não encontrada na carteira' });
   }
-
+  const { pendenciasResumo } = req.body || {};
   if (pendenciasResumo) {
     existing.pendenciasResumo = { ...existing.pendenciasResumo, ...pendenciasResumo, ultimaConsulta: new Date().toISOString() };
   }
-  if (telefone) existing.telefone = telefone;
-  if (email) existing.email = email;
   existing.lastUpdated = new Date().toISOString();
-
   saveCarteira(carteiraCache);
   return res.json({ success: true, item: existing });
 });
 
+// Contato informado manualmente (as bases públicas nem sempre trazem telefone/e-mail).
+app.put('/api/carteira/:cnpj/contato', (req, res) => {
+  const existing = findEmpresa(req.params.cnpj);
+  if (!existing) {
+    return res.status(404).json({ error: 'Empresa não encontrada na carteira' });
+  }
+  const telefone = String(req.body?.telefone ?? '').trim();
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    return res.status(400).json({ error: 'E-mail inválido.' });
+  }
+  existing.contatos_manuais = { telefone: telefone || undefined, email: email || undefined };
+  existing.telefone = telefone || (existing.telefones?.[0] ?? NAO_CADASTRADO);
+  existing.email = email || (existing.emails?.[0] ?? NAO_CADASTRADO);
+  existing.lastUpdated = new Date().toISOString();
+  saveCarteira(carteiraCache);
+  return res.json({ success: true, item: existing, carteira: carteiraCache });
+});
+
 // ==========================================
-// 2. PUBLIC CNPJ LOOKUP (RFB)
+// 2. CONSULTA DE CNPJ (bases públicas da RFB)
 // ==========================================
 app.get('/api/cnpj/:cnpj', async (req, res) => {
   const cnpj = sanitizeCnpj(req.params.cnpj);
-  if (!cnpj || cnpj.length !== 14) {
-    return res.status(400).json({ error: 'CNPJ inválido. Forneça 14 dígitos numéricos.' });
+  if (!isValidCnpj(cnpj)) {
+    return res.status(400).json({ error: 'CNPJ inválido. Confira os 14 caracteres e os dígitos verificadores.' });
   }
 
   try {
-    let data: any = null;
-    let source = 'MinhaReceita';
+    const data = await lookupCnpj(cnpj);
+    if (data) return res.json(data);
 
-    // Attempt 1: Minha Receita (Open Data mirror of official Receita Federal)
-    try {
-      const response = await fetch(`https://minhareceita.org/${cnpj}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AuditaCNPJ/2.0' },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (response.ok) {
-        data = await response.json();
-        source = 'MinhaReceita (RFB)';
-      }
-    } catch (e) {
-      console.warn('MinhaReceita timed out, attempting BrasilAPI...', e);
-    }
+    const cached = findEmpresa(cnpj);
+    if (cached) return res.json({ ...cached, source: 'CarteiraLocal' });
 
-    // Attempt 2: BrasilAPI
-    if (!data) {
-      try {
-        const response2 = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AuditaCNPJ/2.0' },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (response2.ok) {
-          data = await response2.json();
-          source = 'BrasilAPI';
-        }
-      } catch (e2) {
-        console.warn('BrasilAPI fallback failed...', e2);
-      }
-    }
-
-    // Attempt 3: CNPJ.ws
-    if (!data) {
-      try {
-        const response3 = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (response3.ok) {
-          data = await response3.json();
-          source = 'CNPJ.ws';
-        }
-      } catch (e3) {
-        console.warn('CNPJ.ws fallback failed...', e3);
-      }
-    }
-
-    // Attempt 4: Check if already in local carteiraCache
-    if (!data) {
-      const cached = carteiraCache.find(e => sanitizeCnpj(e.cnpj) === cnpj);
-      if (cached) {
-        data = cached;
-        source = 'CarteiraLocal';
-      }
-    }
-
-    // Attempt 5: Resilient mock corporate data for test/demo CNPJs
-    if (!data) {
-      if (cnpj === '48912345000190' || cnpj.startsWith('48912')) {
-        data = {
-          cnpj: '48912345000190',
-          razao_social: 'LUCAS CARVALHO SERVICOS DIGITAIS E CONSULTORIA MEI',
-          nome_fantasia: 'CARBONO TECH SOLUTIONS',
-          descricao_situacao_cadastral: 'ATIVA',
-          data_situacao_cadastral: '2022-10-15',
-          data_inicio_atividade: '2022-10-15',
-          natureza_juridica: '213-5 - Empresário (Individual)',
-          porte: 'MICRO EMPRESA',
-          capital_social: 10000,
-          email: 'lucas.carbonotech@gmail.com',
-          ddd_telefone_1: '11987654321',
-          logradouro: 'Avenida Paulista',
-          numero: '1374',
-          complemento: 'Andar 11 Sala 112',
-          bairro: 'Bela Vista',
-          municipio: 'São Paulo',
-          uf: 'SP',
-          cep: '01310100',
-          cnae_fiscal: '6202300',
-          cnae_fiscal_descricao: 'Desenvolvimento e licenciamento de programas de computador customizáveis',
-          cnaes_secundarios: [
-            { codigo: '6201501', descricao: 'Desenvolvimento de programas de computador sob encomenda' },
-            { codigo: '6209100', descricao: 'Suporte técnico, manutenção e outros serviços em tecnologia da informação' },
-          ],
-          qsa: [
-            {
-              nome_socio: 'LUCAS CARVALHO',
-              qualificacao_socio: 'Titular / Empresário Individual',
-              faixa_etaria: '25 a 35 anos',
-            }
-          ],
-          opcao_pelo_simples: true,
-          opcao_pelo_mei: true,
-        };
-        source = 'BaseResiliente';
-      } else if (cnpj === '18236120000158') {
-        data = {
-          cnpj: '18236120000158',
-          razao_social: 'NU PAGAMENTOS S.A. - INSTITUICAO DE PAGAMENTO',
-          nome_fantasia: 'NUBANK',
-          descricao_situacao_cadastral: 'ATIVA',
-          data_situacao_cadastral: '2013-05-06',
-          data_inicio_atividade: '2013-05-06',
-          natureza_juridica: '205-4 - Sociedade Anônima Fechada',
-          porte: 'DEMAIS',
-          capital_social: 3500000000,
-          email: 'regulamentar@nubank.com.br',
-          ddd_telefone_1: '1122222222',
-          logradouro: 'Rua Capote Valente',
-          numero: '39',
-          bairro: 'Pinheiros',
-          municipio: 'São Paulo',
-          uf: 'SP',
-          cep: '05409000',
-          cnae_fiscal: '6499999',
-          cnae_fiscal_descricao: 'Outras atividades de serviços financeiros não especificadas anteriormente',
-          cnaes_secundarios: [
-            { codigo: '6619399', descricao: 'Outras atividades auxiliares dos serviços financeiros' },
-            { codigo: '6202300', descricao: 'Desenvolvimento e licenciamento de programas de computador' },
-          ],
-          qsa: [
-            { nome_socio: 'DAVID VELEZ OSORNO', qualificacao_socio: 'Diretor Presidente' },
-            { nome_socio: 'CRISTINA JUNQUEIRA', qualificacao_socio: 'Diretor Executivo' },
-          ],
-          opcao_pelo_simples: false,
-          opcao_pelo_mei: false,
-        };
-        source = 'BaseResiliente';
-      }
-    }
-
-    if (!data) {
-      return res.status(404).json({
-        error: 'CNPJ não localizado na base pública da Receita Federal. Verifique o número digitado.',
-      });
-    }
-
-    const { telefone, telefone_secundario } = extractPhones(data);
-    const email = extractEmail(data);
-
-    // Normalize response
-    const normalized = {
-      cnpj: data.cnpj ? sanitizeCnpj(data.cnpj) : cnpj,
-      razao_social: data.razao_social || data.nome || '',
-      nome_fantasia: data.nome_fantasia || data.fantasia || 'Não informado',
-      situacao_cadastral: data.descricao_situacao_cadastral || data.situacao || 'ATIVA',
-      data_situacao_cadastral: data.data_situacao_cadastral || '',
-      motivo_situacao_cadastral: data.descricao_motivo_situacao_cadastral || '',
-      data_inicio_atividade: data.data_inicio_atividade || data.abertura || '',
-      natureza_juridica: data.natureza_juridica || data.codigo_natureza_juridica || '',
-      porte: data.porte || data.descricao_porte || 'Demais',
-      capital_social: data.capital_social || 0,
-
-      // Contato com extração aprimorada
-      email: email,
-      telefone: telefone,
-      telefone_secundario: telefone_secundario,
-
-      // Endereço
-      endereco: {
-        tipo_logradouro: data.descricao_tipo_de_logradouro || '',
-        logradouro: data.logradouro || '',
-        numero: data.numero || 'S/N',
-        complemento: data.complemento || '',
-        bairro: data.bairro || '',
-        cep: data.cep || '',
-        municipio: data.municipio || '',
-        uf: data.uf || '',
-        endereco_completo: `${data.descricao_tipo_de_logradouro ? data.descricao_tipo_de_logradouro + ' ' : ''}${data.logradouro || ''}, ${data.numero || 'S/N'}${data.complemento ? ' - ' + data.complemento : ''}, ${data.bairro || ''} - ${data.municipio || ''}/${data.uf || ''}, CEP: ${data.cep || ''}`,
-      },
-
-      // CNAE Principal
-      cnae_fiscal: {
-        codigo: String(data.cnae_fiscal || data.atividade_principal?.[0]?.code || ''),
-        descricao: data.cnae_fiscal_descricao || data.atividade_principal?.[0]?.text || 'Atividade principal',
-      },
-
-      // CNAEs Secundários
-      cnaes_secundarios: Array.isArray(data.cnaes_secundarios)
-        ? data.cnaes_secundarios.map((c: any) => ({
-            codigo: String(c.codigo || c.code || ''),
-            descricao: c.descricao || c.text || '',
-          }))
-        : Array.isArray(data.atividades_secundarias)
-        ? data.atividades_secundarias.map((c: any) => ({
-            codigo: String(c.code || ''),
-            descricao: c.text || '',
-          }))
-        : [],
-
-      // QSA
-      qsa: Array.isArray(data.qsa)
-        ? data.qsa.map((s: any) => ({
-            nome_socio: s.nome_socio_razao_social || s.nome || s.nome_socio || 'Não informado',
-            qualificacao_socio: s.qualificacao_socio || s.qual || s.qualificacao_representante_legal || 'Sócio/Administrador',
-            faixa_etaria: s.faixa_etaria || '',
-            data_entrada_sociedade: s.data_entrada_sociedade || '',
-            pais: s.pais || 'Brasil',
-          }))
-        : [],
-
-      // MEI & Simples
-      opcao_pelo_simples: Boolean(data.opcao_pelo_simples ?? data.simples?.optante),
-      opcao_pelo_mei: Boolean(
-        data.opcao_pelo_mei ?? 
-        data.simei?.optante ?? 
-        (data.natureza_juridica && String(data.natureza_juridica).includes('213-5'))
-      ),
-      source,
-    };
-
-    return res.json(normalized);
+    return res.status(404).json({
+      error: 'CNPJ não localizado nas bases públicas da Receita Federal (ou todas as fontes estão indisponíveis agora).',
+    });
   } catch (error: any) {
-    console.error('Error fetching CNPJ:', error);
+    console.error('Erro ao consultar CNPJ:', error);
     return res.status(500).json({ error: 'Erro ao processar consulta de CNPJ: ' + (error.message || 'Erro interno') });
   }
 });
 
 // ==========================================
-// 3. STORAGE & PDF SAVE ENDPOINTS (/storage mount)
+// 3. STORAGE DE PDFs (volume /storage)
 // ==========================================
 
-// Save PDF file to persistent volume
 app.post('/api/storage/save-pdf', async (req, res) => {
   try {
-    const { cnpj, tipo, filename, contentBase64, textContent, metadata } = req.body;
+    const { cnpj, tipo, filename, contentBase64, textContent } = req.body;
     const clean = sanitizeCnpj(cnpj) || 'GERAL';
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
@@ -575,23 +217,19 @@ app.post('/api/storage/save-pdf', async (req, res) => {
     if (tipo === 'DAS_MEI') subfolder = 'guias_mei';
 
     const targetDir = path.join(STORAGE_DIR, subfolder);
-    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-
-    const safeFilename = filename || `${tipo}_${clean}_${timestamp}.pdf`;
+    // basename impede gravar fora da pasta (ex.: "../../server.ts")
+    const safeFilename = path.basename(String(filename || `${tipo}_${clean}_${timestamp}.pdf`));
     const targetPath = path.join(targetDir, safeFilename);
 
     if (contentBase64) {
-      const buffer = Buffer.from(contentBase64.replace(/^data:application\/pdf;base64,/, ''), 'base64');
-      fs.writeFileSync(targetPath, buffer);
+      fs.writeFileSync(targetPath, Buffer.from(String(contentBase64).replace(/^data:[^;]+;base64,/, ''), 'base64'));
     } else if (textContent) {
-      // Save text summary / HTML if binary not passed
       fs.writeFileSync(targetPath, textContent, 'utf-8');
     } else {
       return res.status(400).json({ error: 'Nenhum conteúdo (base64 ou texto) enviado para salvar.' });
     }
 
     const stat = fs.statSync(targetPath);
-
     return res.json({
       success: true,
       filename: safeFilename,
@@ -600,175 +238,97 @@ app.post('/api/storage/save-pdf', async (req, res) => {
       subfolder,
       size: stat.size,
       savedPath: targetPath,
-      message: `PDF salvo com sucesso na montagem Docker: ${targetPath}`,
+      message: `Arquivo salvo em ${targetPath}`,
     });
   } catch (error: any) {
-    console.error('Erro ao salvar PDF em storage:', error);
+    console.error('Erro ao salvar arquivo em storage:', error);
     return res.status(500).json({ error: 'Erro ao salvar arquivo no volume: ' + error.message });
   }
 });
 
-// List saved PDF files
 app.get('/api/storage/files', (req, res) => {
   try {
     const results: any[] = [];
-    const subfolders = [
-      { name: 'cnds', label: 'CNDs (Certidões Negativas/Positivas)' },
-      { name: 'guias_mei', label: 'Guias DAS do MEI & Extratos' },
-      { name: 'relatorios', label: 'Relatórios Executivos & Dossiês' },
-    ];
-
-    for (const sub of subfolders) {
+    for (const sub of STORAGE_SUBFOLDERS) {
       const dirPath = path.join(STORAGE_DIR, sub.name);
-      if (fs.existsSync(dirPath)) {
-        const files = fs.readdirSync(dirPath);
-        for (const file of files) {
-          if (file.startsWith('.')) continue;
-          const fullPath = path.join(dirPath, file);
-          const stat = fs.statSync(fullPath);
-          results.push({
-            filename: file,
-            subfolder: sub.name,
-            categoria: sub.label,
-            size: stat.size,
-            updatedAt: stat.mtime.toISOString(),
-            downloadUrl: `/api/storage/download/${sub.name}/${encodeURIComponent(file)}`,
-          });
-        }
+      if (!fs.existsSync(dirPath)) continue;
+      for (const file of fs.readdirSync(dirPath)) {
+        if (file.startsWith('.')) continue;
+        const stat = fs.statSync(path.join(dirPath, file));
+        if (!stat.isFile()) continue;
+        results.push({
+          filename: file,
+          subfolder: sub.name,
+          categoria: sub.label,
+          size: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+          downloadUrl: `/api/storage/download/${sub.name}/${encodeURIComponent(file)}`,
+        });
       }
     }
-
-    // Sort by recent first
     results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-
-    return res.json({
-      storageDir: STORAGE_DIR,
-      totalFiles: results.length,
-      files: results,
-    });
+    return res.json({ storageDir: STORAGE_DIR, totalFiles: results.length, files: results });
   } catch (err: any) {
     return res.status(500).json({ error: 'Erro ao listar arquivos do storage: ' + err.message });
   }
 });
 
-// Download / stream file
 app.get('/api/storage/download/:subfolder/:filename', (req, res) => {
   const { subfolder, filename } = req.params;
+  if (!STORAGE_SUBFOLDERS.some(s => s.name === subfolder)) {
+    return res.status(400).send('Pasta inválida.');
+  }
   const safeFilename = path.basename(filename);
   const filePath = path.join(STORAGE_DIR, subfolder, safeFilename);
-
   if (!fs.existsSync(filePath)) {
     return res.status(404).send('Arquivo não encontrado no storage.');
   }
-
   return res.download(filePath, safeFilename);
 });
 
 // ==========================================
-// 4. CND ANALYSIS WITH STRICT COMPLIANCE
+// 4. CND — leitura e classificação do PDF
 // ==========================================
-function classifyCndText(text: string) {
-  const upper = text.toUpperCase();
-
-  let tipo: 'NEGATIVA' | 'POSITIVA_COM_EFEITO_DE_NEGATIVA' | 'POSITIVA' | 'INCONCLUSIVA' = 'INCONCLUSIVA';
-  let diagnostico = '';
-  let badgeColor: 'green' | 'amber' | 'red' | 'gray' = 'gray';
-
-  const isPositivaEfeitosNegativa = 
-    upper.includes('POSITIVA COM EFEITOS DE NEGATIVA') ||
-    upper.includes('POSITIVA COM EFEITO DE NEGATIVA') ||
-    upper.includes('EFEITOS DE NEGATIVA') ||
-    (upper.includes('POSITIVA') && upper.includes('EXIGIBILIDADE SUSPENSA'));
-
-  const isPositiva = 
-    !isPositivaEfeitosNegativa &&
-    (upper.includes('CERTIDÃO POSITIVA DE DÉBITOS') || 
-     upper.includes('CONSTA DÉBITO') || 
-     upper.includes('EXISTEM PENDÊNCIAS') ||
-     upper.includes('PENDÊNCIAS CADASTRAIS E FISCAIS') ||
-     (upper.includes('POSITIVA') && !upper.includes('EFEITO')));
-
-  const isNegativa = 
-    !isPositivaEfeitosNegativa &&
-    !isPositiva &&
-    (upper.includes('CERTIDÃO NEGATIVA DE DÉBITOS') ||
-     upper.includes('NÃO CONSTAM DÉBITOS') ||
-     upper.includes('NÃO CONSTA DÉBITO') ||
-     upper.includes('SITUAÇÃO REGULAR') ||
-     upper.includes('INEXISTÊNCIA DE DÉBITOS'));
-
-  if (isPositivaEfeitosNegativa) {
-    tipo = 'POSITIVA_COM_EFEITO_DE_NEGATIVA';
-    diagnostico = 'Existem débitos fiscais apurados, porém com exigibilidade legalmente suspensa (parcelamento ativo, garantia integral de penhora ou discussão judicial com depósito). A certidão tem validade jurídica idêntica à negativa para participar de licitações e firmar contratos públicos.';
-    badgeColor = 'amber';
-  } else if (isPositiva) {
-    tipo = 'POSITIVA';
-    diagnostico = 'ATENÇÃO: Constam débitos tributários, previdenciários ou fiscais ativos em aberto, sem suspensão de exigibilidade. A empresa está IRREGULAR perante o Fisco.';
-    badgeColor = 'red';
-  } else if (isNegativa) {
-    tipo = 'NEGATIVA';
-    diagnostico = 'A empresa está 100% REGULAR. Não constam débitos perante a Fazenda Nacional ou Estadual na data de emissão.';
-    badgeColor = 'green';
-  } else {
-    tipo = 'INCONCLUSIVA';
-    diagnostico = 'Não foi possível identificar com certeza a classificação jurídica no texto extraído. Faça uma inspeção visual do documento.';
-    badgeColor = 'gray';
-  }
-
-  // Extract dates and codes
-  const validadeMatch = text.match(/v[aá]lida\s+at[eé]\s*[:]?\s*([0-9]{2}[\/\.][0-9]{2}[\/\.][0-9]{4})/i) ||
-                        text.match(/validade\s*[:]?\s*([0-9]{2}[\/\.][0-9]{2}[\/\.][0-9]{4})/i);
-  const emissaoMatch = text.match(/emitid[ao]\s+[aà]s\s*([0-9]{2}:[0-9]{2}:[0-9]{2})\s+do\s+dia\s*([0-9]{2}[\/\.][0-9]{2}[\/\.][0-9]{4})/i) ||
-                       text.match(/emiss[aã]o\s*[:]?\s*([0-9]{2}[\/\.][0-9]{2}[\/\.][0-9]{4})/i);
-  const controleMatch = text.match(/c[oó]digo\s+de\s+controle\s*[:]?\s*([A-Za-z0-9\.\-]{8,35})/i);
-  const cnpjMatch = text.match(/([0-9]{2}\.[0-9]{3}\.[0-9]{3}\/[0-9]{4}\-[0-9]{2})/);
-
-  return {
-    tipo,
-    diagnostico,
-    badgeColor,
-    validade: validadeMatch ? validadeMatch[1] : null,
-    emissao: emissaoMatch ? (emissaoMatch[2] ? `${emissaoMatch[2]} às ${emissaoMatch[1]}` : emissaoMatch[1]) : null,
-    codigo_controle: controleMatch ? controleMatch[1] : null,
-    cnpj_encontrado: cnpjMatch ? cnpjMatch[1] : null,
-  };
-}
-
 app.post('/api/cnd/analyze-pdf', async (req, res) => {
   try {
-    const { pdfBase64, rawText, fileName, cnpj } = req.body;
+    const { pdfBase64, rawText, fileName, cnpj, esfera } = req.body;
     let extractedText = '';
 
     if (pdfBase64) {
-      const base64Data = pdfBase64.replace(/^data:application\/pdf;base64,/, '');
-      const buffer = Buffer.from(base64Data, 'base64');
-      const parsed = await pdfParse(buffer);
-      extractedText = parsed.text || '';
+      const buffer = Buffer.from(String(pdfBase64).replace(/^data:[^;]+;base64,/, ''), 'base64');
+      const parser = new PDFParse({ data: new Uint8Array(buffer) });
+      try {
+        extractedText = (await parser.getText()).text || '';
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
 
-      // Auto-save analyzed PDF to persistent Docker storage
       if (cnpj) {
         try {
-          const safeCnpj = sanitizeCnpj(cnpj);
-          const safeName = `CND_${safeCnpj}_${Date.now()}.pdf`;
-          fs.writeFileSync(path.join(CND_STORAGE, safeName), buffer);
+          const nome = `CND_${String(esfera || 'CND').toUpperCase()}_${sanitizeCnpj(cnpj)}_${Date.now()}.pdf`;
+          fs.writeFileSync(path.join(STORAGE_DIR, 'cnds', path.basename(nome)), buffer);
         } catch (e) {
-          console.warn('Could not auto-save CND PDF:', e);
+          console.warn('Não foi possível salvar o PDF da CND:', e);
         }
       }
     } else if (rawText) {
-      extractedText = rawText;
+      extractedText = String(rawText);
     } else {
       return res.status(400).json({ error: 'Nenhum PDF (Base64) ou texto informado.' });
     }
 
-    const classification = classifyCndText(extractedText);
+    if (!extractedText.trim()) {
+      return res.status(422).json({
+        error: 'O PDF não tem texto legível (provavelmente é uma imagem escaneada). Baixe a certidão original no site do órgão emissor.',
+      });
+    }
 
     return res.json({
       success: true,
       fileName: fileName || 'certidao.pdf',
       extractedTextLength: extractedText.length,
-      sampleText: extractedText.slice(0, 500),
-      classification,
+      sampleText: extractedText.slice(0, 1500),
+      classification: classifyCndText(extractedText, { cnpj }),
     });
   } catch (error: any) {
     console.error('Erro ao analisar PDF de CND:', error);
@@ -777,254 +337,343 @@ app.post('/api/cnd/analyze-pdf', async (req, res) => {
 });
 
 // ==========================================
-// 5. PGMEI REAL DEBTS APURATION & PARSER
+// 5. MEI — DAS em aberto e DASN-SIMEI (PGMEI, gratuito)
 // ==========================================
 
-// Helper to calculate realistic historical MEI debts covering 2021 to 2026
-function generateRealMeiDebts(cnpj: string) {
-  const currentYear = new Date().getFullYear();
-  const debts = [];
-
-  // INSS reference values per year in Brazil:
-  // 2026: R$ 75,60 | 2025: R$ 70,60 | 2024: R$ 70,60 | 2023: R$ 66,00 | 2022: R$ 60,60 | 2021: R$ 55,00
-  const yearConfig: Record<number, { inss: number; selicMultaPct: number }> = {
-    2026: { inss: 75.60, selicMultaPct: 0.08 },
-    2025: { inss: 70.60, selicMultaPct: 0.18 },
-    2024: { inss: 70.60, selicMultaPct: 0.28 },
-    2023: { inss: 66.00, selicMultaPct: 0.40 },
-    2022: { inss: 60.60, selicMultaPct: 0.52 },
-    2021: { inss: 55.00, selicMultaPct: 0.65 },
-  };
-
-  // Generate realistic pending guide sequence based on CNPJ digits
-  const seed = parseInt(cnpj.slice(-4), 10) || 1234;
-  const numCompetencies = (seed % 6) + 3; // 3 to 8 pending months
-
-  const months = [
-    { mes: '01', ano: 2026, status: 'DEVEDOR' },
-    { mes: '12', ano: 2025, status: 'DEVEDOR' },
-    { mes: '11', ano: 2025, status: 'DEVEDOR' },
-    { mes: '10', ano: 2025, status: 'EM COBRANÇA NA RFB' },
-    { mes: '08', ano: 2025, status: 'EM COBRANÇA NA RFB' },
-    { mes: '05', ano: 2024, status: 'INSCRITO EM DÍVIDA ATIVA DA UNIÃO (PGFN)' },
-    { mes: '03', ano: 2024, status: 'INSCRITO EM DÍVIDA ATIVA DA UNIÃO (PGFN)' },
-    { mes: '11', ano: 2023, status: 'INSCRITO EM DÍVIDA ATIVA DA UNIÃO (PGFN)' },
-  ];
-
-  for (let i = 0; i < Math.min(numCompetencies, months.length); i++) {
-    const item = months[i];
-    const cfg = yearConfig[item.ano] || { inss: 70.60, selicMultaPct: 0.20 };
-    const principal = Number((cfg.inss + 1.00 + 5.00).toFixed(2)); // INSS + ICMS R$ 1 + ISS R$ 5
-    const multaJuros = Number((principal * cfg.selicMultaPct).toFixed(2));
-    const total = Number((principal + multaJuros).toFixed(2));
-
-    const nextMonth = (parseInt(item.mes, 10) % 12) + 1;
-    const nextYear = nextMonth === 1 ? item.ano + 1 : item.ano;
-    const vencimentoStr = `20/${String(nextMonth).padStart(2, '0')}/${nextYear}`;
-
-    debts.push({
-      periodo: `${item.mes}/${item.ano}`,
-      vencimento: vencimentoStr,
-      principal,
-      multa_juros: multaJuros,
-      total,
-      situacao: item.status,
-      tipo: 'DAS-MEI',
-      linha_digitavel: `85890000000 8 ${Math.floor(total * 100)} 0328240 10000000000 0 ${cnpj.slice(0, 8)}`,
-    });
-  }
-
-  return debts;
+function arquivoMei(cnpj: string) {
+  return path.join(MEI_DIR, `${sanitizeCnpj(cnpj)}.json`);
 }
 
-app.post('/api/rpa/pgmei', (req, res) => {
-  const { cnpj } = req.body;
-  const cleanCnpj = sanitizeCnpj(cnpj);
-
-  if (!cleanCnpj || cleanCnpj.length !== 14) {
-    return res.status(400).json({ error: 'CNPJ inválido para apuração PGMEI.' });
+function lerResultadoMei(cnpj: string): ResultadoMei | null {
+  try {
+    const file = arquivoMei(cnpj);
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : null;
+  } catch {
+    return null;
   }
+}
 
-  const pgmeiUrl = 'https://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao';
-  const debts = generateRealMeiDebts(cleanCnpj);
-  const totalAtraso = debts.reduce((acc, curr) => acc + curr.total, 0);
+function salvarResultadoMei(resultado: ResultadoMei) {
+  fs.writeFileSync(arquivoMei(resultado.cnpj), JSON.stringify(resultado, null, 2), 'utf-8');
 
+  const empresa = findEmpresa(resultado.cnpj);
+  if (empresa) {
+    empresa.pendenciasResumo = {
+      ...empresa.pendenciasResumo,
+      totalDebitosMei: resultado.resumo.totalGeral,
+      guiasAtrasoMei: resultado.resumo.qtdVencidas + resultado.resumo.qtdDividaAtiva,
+      guiasEmAbertoMei: resultado.resumo.qtdEmAberto + resultado.resumo.qtdDividaAtiva,
+      declaracoesPendentesMei: resultado.resumo.declaracoesPendentes,
+      meiConsultadoEm: resultado.consultadoEm,
+      meiFonte: resultado.fonte,
+      ultimaConsulta: new Date().toISOString(),
+    };
+    saveCarteira(carteiraCache);
+  }
+}
+
+function recalcular(resultado: ResultadoMei): ResultadoMei {
+  resultado.competencias.sort((a, b) => b.periodoApuracao.localeCompare(a.periodoApuracao));
+  resultado.resumo = resumir(resultado.competencias, resultado.declaracoes);
+  return resultado;
+}
+
+interface JobMei {
+  id: string;
+  cnpj: string;
+  status: 'na_fila' | 'executando' | 'concluido' | 'erro';
+  etapa: string;
+  atual: number;
+  total: number;
+  criadoEm: number;
+  resultado?: ResultadoMei;
+  erro?: string;
+  bloqueado?: boolean;
+}
+
+const jobsMei = new Map<string, JobMei>();
+// Uma consulta por vez: evita abrir vários navegadores e não sobrecarrega o portal.
+let filaMei: Promise<void> = Promise.resolve();
+
+function limparJobsAntigos() {
+  const limite = Date.now() - 60 * 60 * 1000;
+  for (const [id, job] of jobsMei) {
+    if (job.criadoEm < limite && (job.status === 'concluido' || job.status === 'erro')) jobsMei.delete(id);
+  }
+}
+
+app.get('/api/status', (req, res) => {
   return res.json({
-    success: true,
-    url: pgmeiUrl,
-    cnpj: cleanCnpj,
-    status_mei: 'OPTANTE_SIMEI',
-    total_guias_atraso: debts.length,
-    valor_total_atraso: Number(totalAtraso.toFixed(2)),
-    competencias_pendentes: debts,
-    instrucoes_rpa: {
-      url: pgmeiUrl,
-      campo_cnpj: 'input#cnpj ou input[name="cnpj"]',
-      botao_continuar: 'button[type="submit"]',
-      seletor_tabela_guias: 'table.tabelaExtratoDAS tr',
-    }
+    robo_pgmei: {
+      disponivel: Boolean(localizarChrome()),
+      headless: process.env.PGMEI_HEADLESS !== 'false',
+    },
+    cnd_federal_url: CND_FEDERAL_URL,
   });
 });
 
-// Parser for pasted official PGMEI text or PDF report
-app.post('/api/rpa/pgmei-parse', (req, res) => {
-  try {
-    const { rawText, cnpj } = req.body;
-    if (!rawText) {
-      return res.status(400).json({ error: 'Texto do extrato PGMEI não informado.' });
-    }
+app.get('/api/mei/jobs/:id', (req, res) => {
+  const job = jobsMei.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Consulta não encontrada (pode ter expirado).' });
+  return res.json(job);
+});
 
-    const lines = rawText.split('\n');
-    const parsedDebts: any[] = [];
+app.get('/api/mei/:cnpj', (req, res) => {
+  const resultado = lerResultadoMei(req.params.cnpj);
+  if (!resultado) return res.status(404).json({ error: 'Nenhuma consulta do MEI salva para este CNPJ.' });
+  return res.json(resultado);
+});
 
-    // Look for lines containing competence format XX/YYYY or similar
-    const compRegex = /(\b(0[1-9]|1[0-2])\/(20[1-9][0-9])\b)/;
-    const valueRegex = /R?\$?\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})/g;
+app.post('/api/mei/:cnpj/consultar', async (req, res) => {
+  const cnpj = sanitizeCnpj(req.params.cnpj);
+  if (!isValidCnpj(cnpj)) return res.status(400).json({ error: 'CNPJ inválido.' });
 
-    for (const line of lines) {
-      const compMatch = line.match(compRegex);
-      if (compMatch) {
-        const values: number[] = [];
-        let match;
-        while ((match = valueRegex.exec(line)) !== null) {
-          const num = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
-          if (!isNaN(num)) values.push(num);
-        }
+  const emAndamento = Array.from(jobsMei.values()).find(j => j.cnpj === cnpj && (j.status === 'na_fila' || j.status === 'executando'));
+  if (emAndamento) return res.json({ jobId: emAndamento.id, jaEmAndamento: true });
 
-        const total = values.length > 0 ? Math.max(...values) : 81.60;
-        const principal = values.length > 1 ? Math.min(...values) : Number((total * 0.85).toFixed(2));
-        const multaJuros = Number((total - principal).toFixed(2));
+  limparJobsAntigos();
+  const empresa = findEmpresa(cnpj);
+  const job: JobMei = { id: randomUUID(), cnpj, status: 'na_fila', etapa: 'Aguardando na fila...', atual: 0, total: 0, criadoEm: Date.now() };
+  jobsMei.set(job.id, job);
 
-        let situacao = 'DEVEDOR';
-        if (line.toUpperCase().includes('DÍVIDA ATIVA') || line.toUpperCase().includes('PGFN')) {
-          situacao = 'INSCRITO EM DÍVIDA ATIVA DA UNIÃO (PGFN)';
-        } else if (line.toUpperCase().includes('COBRANÇA')) {
-          situacao = 'EM COBRANÇA NA RFB';
-        }
+  const maxAnos = Math.min(Math.max(Number(req.body?.maxAnos) || 6, 1), 10);
+  const verificarDasn = req.body?.verificarDasn !== false;
+  filaMei = filaMei.then(async () => {
+    job.status = 'executando';
+    try {
+      const resultado = await consultarPgmei({
+        cnpj,
+        ...datasMei(empresa),
+        maxAnos,
+        verificarDasn,
+        headless: process.env.PGMEI_HEADLESS !== 'false',
+        baseUrl: process.env.PGMEI_BASE_URL,
+        onProgresso: (etapa, atual, total) => Object.assign(job, { etapa, atual, total }),
+      });
 
-        parsedDebts.push({
-          periodo: compMatch[1],
-          vencimento: `20/${compMatch[1]}`,
-          principal,
-          multa_juros: multaJuros,
-          total,
-          situacao,
-          tipo: 'DAS-MEI',
+      // Mantém a situação de declarações marcadas manualmente quando o robô não conseguiu verificar.
+      const anterior = lerResultadoMei(cnpj);
+      if (anterior) {
+        resultado.declaracoes = resultado.declaracoes.map(d => {
+          const manual = anterior.declaracoes.find(a => a.ano === d.ano && a.fonte === 'Manual');
+          return d.situacao === 'NAO_VERIFICADA' && manual ? manual : d;
         });
       }
+
+      salvarResultadoMei(recalcular(resultado));
+      Object.assign(job, { status: 'concluido', etapa: 'Consulta concluída.', resultado });
+    } catch (err: any) {
+      console.error('[PGMEI] Falha na consulta:', err);
+      Object.assign(job, {
+        status: 'erro',
+        erro: err?.message || 'Falha inesperada na consulta ao PGMEI.',
+        bloqueado: err instanceof PgmeiBloqueadoError,
+      });
     }
+  });
 
-    const totalCalculado = parsedDebts.reduce((acc, curr) => acc + curr.total, 0);
+  return res.json({ jobId: job.id });
+});
 
-    return res.json({
-      success: true,
-      cnpj: cnpj || '',
-      total_guias: parsedDebts.length,
-      valor_total: Number(totalCalculado.toFixed(2)),
-      competencias: parsedDebts,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: 'Erro ao analisar extrato do PGMEI: ' + err.message });
+// Importa a tabela copiada do PGMEI (Ctrl+C na tela "Emitir Guia de Pagamento").
+app.post('/api/mei/:cnpj/importar', (req, res) => {
+  const cnpj = sanitizeCnpj(req.params.cnpj);
+  const { texto, textoDeclaracoes } = req.body || {};
+  if (!texto && !textoDeclaracoes) {
+    return res.status(400).json({ error: 'Cole o texto da tabela do PGMEI ou da lista de declarações do DASN-SIMEI.' });
   }
+
+  const empresa = findEmpresa(cnpj);
+  const anterior = lerResultadoMei(cnpj);
+  const { competencias: importadas, ignoradas } = texto ? parseExtratoPgmei(String(texto)) : { competencias: [], ignoradas: 0 };
+  if (texto && importadas.length === 0) {
+    return res.status(422).json({
+      error: 'Nenhuma competência reconhecida. Copie a tabela inteira do PGMEI (com o mês/ano, situação e valores de cada linha).',
+    });
+  }
+
+  // Competências importadas substituem as de mesmo período; as demais são mantidas.
+  const porPa = new Map<string, CompetenciaMei>((anterior?.competencias || []).map(c => [c.periodoApuracao, c]));
+  for (const c of importadas) porPa.set(c.periodoApuracao, c);
+
+  const exigiveis = anosDasnExigiveis(datasMei(empresa));
+  const pendentes = new Map<number, { fonte: string; observacao?: string }>();
+  const entregues = new Map<number, { fonte: string }>();
+  for (const d of anterior?.declaracoes || []) {
+    if (!exigiveis.includes(d.ano)) continue;
+    if (d.situacao === 'PENDENTE') pendentes.set(d.ano, { fonte: d.fonte || 'Anterior', observacao: d.observacao });
+    if (d.situacao === 'ENTREGUE') entregues.set(d.ano, { fonte: d.fonte || 'Anterior' });
+  }
+  if (textoDeclaracoes) {
+    const anos = parseDeclaracoesEntregues(String(textoDeclaracoes));
+    for (const ano of anos) {
+      pendentes.delete(ano);
+      entregues.set(ano, { fonte: 'Importação DASN-SIMEI' });
+    }
+    if (anos.length > 0) {
+      for (const ano of exigiveis) {
+        if (!entregues.has(ano)) pendentes.set(ano, { fonte: 'Importação DASN-SIMEI', observacao: 'Não consta na lista de declarações importada.' });
+      }
+    }
+  }
+
+  const resultado = recalcular({
+    cnpj,
+    fonte: 'IMPORTACAO_PGMEI',
+    consultadoEm: new Date().toISOString(),
+    competencias: Array.from(porPa.values()),
+    declaracoes: montarDeclaracoes(exigiveis, pendentes, entregues),
+    resumo: resumir([], []),
+    avisos: ignoradas ? [`${ignoradas} linha(s) com período mas sem valores/situação foram ignoradas.`] : [],
+  });
+  salvarResultadoMei(resultado);
+  return res.json(resultado);
+});
+
+// Marca manualmente a situação de uma DASN-SIMEI.
+app.put('/api/mei/:cnpj/declaracoes/:ano', (req, res) => {
+  const cnpj = sanitizeCnpj(req.params.cnpj);
+  const ano = Number(req.params.ano);
+  const situacao = String(req.body?.situacao || '') as SituacaoDeclaracao;
+  if (!['PENDENTE', 'ENTREGUE', 'NAO_VERIFICADA'].includes(situacao)) {
+    return res.status(400).json({ error: 'Situação inválida.' });
+  }
+
+  const empresa = findEmpresa(cnpj);
+  const resultado: ResultadoMei = lerResultadoMei(cnpj) || {
+    cnpj,
+    fonte: 'IMPORTACAO_PGMEI',
+    consultadoEm: new Date().toISOString(),
+    competencias: [],
+    declaracoes: montarDeclaracoes(
+      anosDasnExigiveis(datasMei(empresa)),
+      new Map(),
+      new Map(),
+    ),
+    resumo: resumir([], []),
+    avisos: [],
+  };
+
+  const nova: DeclaracaoMei = { ano, situacao, prazo: `31/05/${ano + 1}`, fonte: 'Manual' };
+  const idx = resultado.declaracoes.findIndex(d => d.ano === ano);
+  if (idx >= 0) resultado.declaracoes[idx] = nova;
+  else resultado.declaracoes.push(nova);
+  resultado.declaracoes.sort((a, b) => b.ano - a.ano);
+
+  salvarResultadoMei(recalcular(resultado));
+  return res.json(resultado);
 });
 
 // ==========================================
-// 6. SELENIUM PYTHON ROBOT SCRIPT
+// 6. SCRIPT ASSISTIDO (Python/Selenium) PARA A CND FEDERAL
 // ==========================================
 app.post('/api/selenium-script', (req, res) => {
-  const { cnpj, cndUrl, pgmeiOnly } = req.body;
+  const { cnpj, cndUrl, appUrl } = req.body || {};
   const cleanCnpj = sanitizeCnpj(cnpj) || '00000000000000';
-  const targetCndUrl = cndUrl || 'https://solucoes.receita.fazenda.gov.br/Servicos/certidaointernet/PJ/Consultar/';
+  const targetCndUrl = cndUrl || CND_FEDERAL_URL;
+  const baseApp = appUrl || 'http://localhost:3000';
 
   const script = `"""
-AuditaCNPJ - Robô RPA Selenium para Consulta de CNDs e PGMEI
-Armazenamento montado: ./storage/ (ou /app/storage no Docker)
+Vírgula, Contábil — emissão assistida de CND com leitura automática do PDF
+
+O site da certidão tem verificação de segurança (captcha), então o robô abre o
+navegador, preenche o CNPJ e espera você concluir a emissão. Quando o PDF for
+baixado, ele é enviado ao sistema para classificação (Negativa / Positiva com
+efeito de negativa / Positiva).
+
 Instalação:
-    pip install selenium webdriver-manager pypdf requests
+    pip install selenium webdriver-manager requests
 Uso:
-    python audita_cnpj_selenium.py
+    python cnd_assistida.py
 """
 
-import time
+import base64
+import glob
 import os
+import time
+
+import requests
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-import pypdf
 
-CNPJ_ALVO = "${cleanCnpj}"
+CNPJ = "${cleanCnpj}"
 URL_CND = "${targetCndUrl}"
-URL_PGMEI = "https://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao"
+APP_URL = "${baseApp}"
+PASTA_DOWNLOAD = os.path.abspath("storage/downloads")
 
-def configurar_driver(download_dir="storage/downloads"):
-    os.makedirs(download_dir, exist_ok=True)
-    abs_dir = os.path.abspath(download_dir)
-    
+
+def abrir_navegador():
+    os.makedirs(PASTA_DOWNLOAD, exist_ok=True)
     options = Options()
     options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    
-    prefs = {
-        "download.default_directory": abs_dir,
+    options.add_experimental_option("prefs", {
+        "download.default_directory": PASTA_DOWNLOAD,
         "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True
-    }
-    options.add_experimental_option("prefs", prefs)
-    
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    return driver, abs_dir
+        "plugins.always_open_pdf_externally": True,
+    })
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-def consultar_cnd(driver, download_dir, cnpj):
-    print(f"[*] Acessando Portal CND: {URL_CND}")
-    driver.get(URL_CND)
-    wait = WebDriverWait(driver, 20)
-    
-    try:
-        campo_cnpj = wait.until(EC.presence_of_element_located((By.XPATH, "//input[contains(@id, 'cnpj') or contains(@name, 'cnpj') or contains(@placeholder, 'CNPJ')]")))
-        campo_cnpj.clear()
-        campo_cnpj.send_keys(cnpj)
-        print("[+] CNPJ inserido com sucesso no formulário.")
-        
-        botao = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Consultar') or contains(., 'Emitir')] | //input[@type='submit']")))
-        botao.click()
-        print("[+] Formulário submetido. Aguardando processamento...")
-        time.sleep(5)
-    except Exception as e:
-        print(f"[-] Erro ao automatizar CND: {e}")
 
-def consultar_pgmei(driver, cnpj):
-    print(f"[*] Acessando Portal PGMEI: {URL_PGMEI}")
-    driver.get(URL_PGMEI)
-    wait = WebDriverWait(driver, 20)
-    try:
-        campo = wait.until(EC.presence_of_element_located((By.ID, "cnpj")))
-        campo.clear()
-        campo.send_keys(cnpj)
-        print("[+] CNPJ informado no PGMEI. Clique em Continuar no navegador.")
-    except Exception as e:
-        print(f"[-] Erro PGMEI: {e}")
+def preencher_cnpj(driver):
+    for _ in range(40):
+        campos = driver.find_elements(By.CSS_SELECTOR, "input[formcontrolname*='cnpj' i], input[id*='cnpj' i], input[name*='cnpj' i], input[placeholder*='CNPJ' i]")
+        if campos:
+            campos[0].clear()
+            campos[0].send_keys(CNPJ)
+            print("[+] CNPJ preenchido.")
+            return
+        time.sleep(0.5)
+    print("[!] Campo de CNPJ não encontrado: digite o CNPJ manualmente.")
+
+
+def aguardar_pdf(antes, limite_segundos=600):
+    fim = time.time() + limite_segundos
+    while time.time() < fim:
+        novos = [f for f in glob.glob(os.path.join(PASTA_DOWNLOAD, "*.pdf")) if f not in antes]
+        if novos:
+            time.sleep(1)
+            return max(novos, key=os.path.getmtime)
+        time.sleep(1)
+    return None
+
+
+def enviar_para_analise(caminho):
+    with open(caminho, "rb") as f:
+        conteudo = base64.b64encode(f.read()).decode()
+    resp = requests.post(f"{APP_URL}/api/cnd/analyze-pdf", json={
+        "pdfBase64": conteudo,
+        "fileName": os.path.basename(caminho),
+        "cnpj": CNPJ,
+        "esfera": "federal",
+    }, timeout=60)
+    resp.raise_for_status()
+    classificacao = resp.json()["classification"]
+    print(f"[+] Resultado: {classificacao['tipo']} — validade: {classificacao.get('validade')}")
+
 
 if __name__ == "__main__":
-    driver, ddir = configurar_driver()
+    driver = abrir_navegador()
     try:
-        ${pgmeiOnly ? '' : 'consultar_cnd(driver, ddir, CNPJ_ALVO)'}
-        ${pgmeiOnly ? '' : 'time.sleep(3)'}
-        consultar_pgmei(driver, CNPJ_ALVO)
+        antes = set(glob.glob(os.path.join(PASTA_DOWNLOAD, "*.pdf")))
+        driver.get(URL_CND)
+        preencher_cnpj(driver)
+        print("[*] Conclua a verificação de segurança e clique em emitir/baixar a certidão...")
+        pdf = aguardar_pdf(antes)
+        if pdf:
+            print(f"[+] PDF baixado: {pdf}")
+            enviar_para_analise(pdf)
+        else:
+            print("[-] Nenhum PDF baixado no tempo limite.")
     finally:
-        print("[*] Automação concluída.")
+        driver.quit()
 `;
 
   return res.json({ script });
 });
 
-// Configure Vite in development or static serve in production
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer } = await import('vite');
@@ -1041,7 +690,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AuditaCNPJ server running on http://0.0.0.0:${PORT}`);
+    console.log(`Vírgula, Contábil rodando em http://0.0.0.0:${PORT}`);
   });
 }
 

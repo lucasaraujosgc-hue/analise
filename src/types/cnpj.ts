@@ -23,11 +23,25 @@ export interface EnderecoEmpresa {
   endereco_completo: string;
 }
 
+export interface InscricaoEstadual {
+  inscricao: string;
+  uf: string;
+  ativa: boolean;
+}
+
+export type StatusCnd = 'NEGATIVA' | 'POSITIVA_COM_EFEITO_DE_NEGATIVA' | 'POSITIVA' | 'NAO_CONSULTADA' | 'INCONCLUSIVA';
+
 export interface PendenciasResumo {
-  cndFederal?: 'NEGATIVA' | 'POSITIVA_COM_EFEITO_DE_NEGATIVA' | 'POSITIVA' | 'NAO_CONSULTADA' | 'INCONCLUSIVA';
-  cndEstadual?: 'NEGATIVA' | 'POSITIVA_COM_EFEITO_DE_NEGATIVA' | 'POSITIVA' | 'NAO_CONSULTADA' | 'INCONCLUSIVA';
+  cndFederal?: StatusCnd;
+  cndEstadual?: StatusCnd;
+  cndFederalValidade?: string;
+  cndEstadualValidade?: string;
   totalDebitosMei?: number;
   guiasAtrasoMei?: number;
+  guiasEmAbertoMei?: number;
+  declaracoesPendentesMei?: number[];
+  meiConsultadoEm?: string;
+  meiFonte?: string;
   ultimaConsulta?: string;
 }
 
@@ -43,15 +57,23 @@ export interface EmpresaData {
   porte: string;
   capital_social: number;
   email: string;
+  emails?: string[];
   telefone: string;
   telefone_secundario?: string;
+  telefones?: string[];
+  contatos_manuais?: { telefone?: string; email?: string };
   endereco: EnderecoEmpresa;
   cnae_fiscal: CNAE;
   cnaes_secundarios: CNAE[];
   qsa: SocioQSA[];
   opcao_pelo_simples: boolean;
   opcao_pelo_mei: boolean;
+  data_opcao_pelo_mei?: string;
+  data_exclusao_do_mei?: string;
+  inscricoes_estaduais?: InscricaoEstadual[];
   source?: string;
+  fontes?: string[];
+  fontes_contato?: string[];
   lastUpdated?: string;
   pendenciasResumo?: PendenciasResumo;
 }
@@ -63,9 +85,11 @@ export interface CNDClassification {
   diagnostico: string;
   badgeColor: 'green' | 'amber' | 'red' | 'gray';
   validade: string | null;
+  vencida: boolean | null;
   emissao: string | null;
   codigo_controle: string | null;
   cnpj_encontrado: string | null;
+  cnpj_confere: boolean | null;
 }
 
 export interface CNDAnalysisResult {
@@ -76,31 +100,85 @@ export interface CNDAnalysisResult {
   classification: CNDClassification;
 }
 
-export interface GuiaAtrasoMEI {
+// ---- MEI (PGMEI / DASN-SIMEI) ----
+
+export type SituacaoCompetencia =
+  | 'EM_ABERTO'
+  | 'A_VENCER'
+  | 'PAGO'
+  | 'DIVIDA_ATIVA'
+  | 'PARCELADO'
+  | 'DEBITO_AUTOMATICO'
+  | 'BLOQUEADO_DASN'
+  | 'ABAIXO_MINIMO'
+  | 'SEM_DEBITO'
+  | 'NAO_OPTANTE'
+  | 'REAPURACAO_NECESSARIA'
+  | 'ERRO';
+
+export interface CompetenciaMei {
   periodo: string;
-  vencimento: string;
-  principal: number;
-  multa_juros: number;
-  total: number;
-  situacao: string;
-  tipo: string;
-  linha_digitavel?: string;
+  periodoApuracao: string;
+  situacao: SituacaoCompetencia;
+  vencimento?: string;
+  vencida?: boolean;
+  principal?: number;
+  multa?: number;
+  juros?: number;
+  total?: number;
+  dataLimitePagamento?: string;
+  mensagem?: string;
 }
 
-export interface PGMEIResult {
-  success: boolean;
-  url: string;
+export type SituacaoDeclaracao = 'PENDENTE' | 'ENTREGUE' | 'NAO_VERIFICADA';
+
+export interface DeclaracaoMei {
+  ano: number;
+  situacao: SituacaoDeclaracao;
+  prazo: string;
+  fonte?: string;
+  observacao?: string;
+}
+
+export interface ResumoMei {
+  qtdEmAberto: number;
+  totalEmAberto: number;
+  qtdVencidas: number;
+  totalVencido: number;
+  qtdDividaAtiva: number;
+  totalDividaAtiva: number;
+  qtdSemValor: number;
+  totalGeral: number;
+  declaracoesPendentes: number[];
+}
+
+export interface ResultadoMei {
   cnpj: string;
-  status_mei: string;
-  total_guias_atraso: number;
-  valor_total_atraso: number;
-  competencias_pendentes: GuiaAtrasoMEI[];
-  instrucoes_rpa: {
-    url: string;
-    campo_cnpj: string;
-    botao_continuar: string;
-    seletor_tabela_guias: string;
-  };
+  fonte: 'PGMEI_ROBO' | 'IMPORTACAO_PGMEI';
+  consultadoEm: string;
+  periodoInicial?: string;
+  periodoFinal?: string;
+  competencias: CompetenciaMei[];
+  declaracoes: DeclaracaoMei[];
+  resumo: ResumoMei;
+  avisos: string[];
+}
+
+export interface JobMei {
+  id: string;
+  cnpj: string;
+  status: 'na_fila' | 'executando' | 'concluido' | 'erro';
+  etapa: string;
+  atual: number;
+  total: number;
+  resultado?: ResultadoMei;
+  erro?: string;
+  bloqueado?: boolean;
+}
+
+export interface StatusSistema {
+  robo_pgmei: { disponivel: boolean; headless: boolean };
+  cnd_federal_url: string;
 }
 
 export interface StorageFile {

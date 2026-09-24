@@ -1,5 +1,6 @@
+// Aceita CNPJ alfanumérico (emitido pela RFB desde julho/2026).
 export function formatCNPJ(value: string): string {
-  const digits = value.replace(/\D/g, '').slice(0, 14);
+  const digits = cleanCNPJ(value).slice(0, 14);
   if (digits.length <= 2) return digits;
   if (digits.length <= 5) return `${digits.slice(0, 2)}.${digits.slice(2)}`;
   if (digits.length <= 8) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5)}`;
@@ -8,7 +9,7 @@ export function formatCNPJ(value: string): string {
 }
 
 export function cleanCNPJ(value: string): string {
-  return value.replace(/\D/g, '');
+  return String(value || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
 }
 
 export function formatCurrency(value: number): string {
