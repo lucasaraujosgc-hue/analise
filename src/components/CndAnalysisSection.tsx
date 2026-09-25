@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { EmpresaData, CNDAnalysisResult, TipoCertidao, StatusCnd } from '../types/cnpj';
-import { analyzeCndPdf, fetchJob, iniciarEmissaoCndFederal, updatePendenciasInCarteira } from '../services/api';
+import { analyzeCndPdf, fetchJob, iniciarEmissaoCnd, updatePendenciasInCarteira } from '../services/api';
 import { SAMPLE_CND_TEXTS } from '../data/mockCompanies';
 import { CND_ESTADUAL, CND_FEDERAL, OUTRAS_CERTIDOES } from '../data/cndLinks';
 import { formatCNPJ } from '../utils/formatters';
@@ -84,12 +84,14 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
     setErro(null);
     setRoboEtapa('Iniciando o robô...');
     try {
-      const jobId = await iniciarEmissaoCndFederal(empresa.cnpj);
+      const alvo = esfera;
+      const { jobId, roteiro } = await iniciarEmissaoCnd(empresa.cnpj, alvo);
+      if (roteiro) setRoboEtapa(`Usando o roteiro “${roteiro}”...`);
       for (;;) {
         await new Promise(r => setTimeout(r, 2000));
         const job = await fetchJob<CNDAnalysisResult>(jobId);
         if (job.status === 'concluido' && job.resultado) {
-          setResultado({ esfera: 'federal', dados: job.resultado, exemplo: false });
+          setResultado({ esfera: alvo, dados: job.resultado, exemplo: false });
           onRefreshPortfolioSummary?.();
           break;
         }
@@ -209,7 +211,7 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
             <li>Envie o PDF baixado ao lado.</li>
           </ol>
 
-          {esfera === 'federal' && (
+          {(
             <button
               onClick={buscarNoServidor}
               disabled={Boolean(roboEtapa)}

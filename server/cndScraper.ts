@@ -8,7 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { abrirNavegador, abrirUrl, AjudaHumana, desafioCaptchaVisivel } from './navegador';
+import { abrirNavegador, abrirUrl, AjudaHumana, capturarPdfs, desafioCaptchaVisivel } from './navegador';
 import { CND_FEDERAL_URL } from './cnd';
 import { salvarPrintDiagnostico } from './pgmeiScraper';
 
@@ -28,14 +28,30 @@ export interface ResultadoRoboCnd {
 
 const esperar = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-const SELETOR_CNPJ = [
+// Em ordem de preferência. Um único seletor com vírgulas pegava o primeiro input
+// da página — a busca do cabeçalho do site — e digitava o CNPJ no lugar errado.
+const SELETORES_CNPJ = [
   "input[formcontrolname*='cnpj' i]",
   "input[id*='cnpj' i]",
   "input[name*='cnpj' i]",
   "input[placeholder*='cnpj' i]",
   "input[aria-label*='cnpj' i]",
-  "input[type='text']",
-].join(', ');
+];
+
+async function localizarCampoCnpj(page: any, prazoMs: number) {
+  const limite = Date.now() + prazoMs;
+  while (Date.now() < limite) {
+    for (const sel of SELETORES_CNPJ) {
+      for (const el of await page.$$(sel)) {
+        // Ignora a busca do cabeçalho do portal.
+        const naBusca = await el.evaluate((e: Element) => Boolean(e.closest('header, [role="search"], form[role="search"]'))).catch(() => true);
+        if (!naBusca && (await el.boundingBox())) return el;
+      }
+    }
+    await esperar(500);
+  }
+  return null;
+}
 
 // Clica no primeiro botão/link visível cujo texto combine com o padrão.
 async function clicarPorTexto(page: any, padrao: RegExp, jaClicados: Set<string>): Promise<string | null> {
@@ -72,36 +88,20 @@ export async function emitirCndFederal(opcoes: {
   const { browser, prepararPagina } = await abrirNavegador({ headless: opcoes.headless });
 
   let pdf: Buffer | undefined;
-  let urlPdf: string | undefined;
-  const capturarResposta = async (resp: any) => {
-    const tipo = String(resp.headers()['content-type'] || '').toLowerCase();
-    if (pdf || !resp.ok() || !tipo.includes('pdf')) return;
-    urlPdf = resp.url();
-    try {
-      const buf: Buffer = await resp.buffer();
-      if (buf.subarray(0, 4).toString() === '%PDF') pdf = buf;
-    } catch {
-      // Quando o PDF vira download o corpo não fica disponível: baixamos de novo pela URL.
-    }
-  };
-
   let page: any;
   try {
     page = await prepararPagina((await browser.pages())[0]);
-    page.on('response', capturarResposta);
-    const cdp = await browser.target().createCDPSession();
-    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: pastaDownload });
-    // PDF aberto em nova aba
-    browser.on('targetcreated', async (target: any) => {
-      const nova = await target.page().catch(() => null);
-      if (nova) nova.on('response', capturarResposta);
-    });
+    const capturador = await capturarPdfs(browser, page, pastaDownload);
 
     progresso('Abrindo o portal de certidões da Receita...');
     await abrirUrl(page, opcoes.url || CND_FEDERAL_URL);
 
-    const campo = await page.waitForSelector(SELETOR_CNPJ, { visible: true, timeout: 30_000 }).catch(() => null);
-    if (!campo) throw new CndBloqueadaError('O portal de certidões abriu, mas o campo de CNPJ não apareceu.');
+    // Banner de cookies cobre os botões da página.
+    await esperar(1500);
+    await clicarPorTexto(page, /^aceitar( todos)?( os cookies)?$/i, new Set());
+
+    const campo = await localizarCampoCnpj(page, 30_000);
+    if (!campo) throw new CndBloqueadaError('O portal de certidões abriu, mas o campo de CNPJ não apareceu. Grave um roteiro em "Robôs (RPA)" para este site.');
 
     progresso('Informando o CNPJ...');
     await campo.click({ clickCount: 3 });
@@ -112,7 +112,7 @@ export async function emitirCndFederal(opcoes: {
     await esperar(800);
 
     const clicados = new Set<string>();
-    const primeiro = await clicarPorTexto(page, /^(consultar|emitir|pesquisar|continuar|avan[cç]ar)/i, clicados);
+    const primeiro = await clicarPorTexto(page, /^(emitir certid|emitir|consultar|pesquisar|continuar|avan[cç]ar)/i, clicados);
     if (!primeiro) await page.keyboard.press('Enter');
     else clicados.add(primeiro);
 
@@ -121,30 +121,8 @@ export async function emitirCndFederal(opcoes: {
     while (!pdf && Date.now() < limite) {
       await esperar(1500);
 
-      const baixado = fs.readdirSync(pastaDownload).find(f => !f.endsWith('.crdownload'));
-      if (baixado) {
-        const buf = fs.readFileSync(path.join(pastaDownload, baixado));
-        if (buf.subarray(0, 4).toString() === '%PDF') {
-          pdf = buf;
-          break;
-        }
-      }
-      if (urlPdf) {
-        const base64: string | null = await page
-          .evaluate(async (u: string) => {
-            const r = await fetch(u, { credentials: 'include' });
-            const bytes = new Uint8Array(await r.arrayBuffer());
-            let bin = '';
-            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-            return btoa(bin);
-          }, urlPdf)
-          .catch(() => null);
-        const buf = base64 ? Buffer.from(base64, 'base64') : null;
-        if (buf && buf.subarray(0, 4).toString() === '%PDF') {
-          pdf = buf;
-          break;
-        }
-      }
+      pdf = await capturador.obter();
+      if (pdf) break;
 
       const texto: string = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (/insuficientes para a emiss[aã]o/i.test(texto)) return { textoPagina: texto };

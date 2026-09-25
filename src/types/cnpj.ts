@@ -191,3 +191,36 @@ export interface StorageFile {
   updatedAt: string;
   downloadUrl: string;
 }
+
+// ---- RPA gravável ----
+
+export interface AlvoElemento {
+  seletor?: string;
+  texto?: string;
+  tag?: string;
+  x: number;
+  y: number;
+  scrollY?: number;
+}
+
+export type PassoRpa =
+  | { tipo: 'clique'; alvo: AlvoElemento; esperaMs: number; opcional?: boolean }
+  | { tipo: 'digitar'; valor: string; alvo?: AlvoElemento; limpar: boolean; esperaMs: number }
+  | { tipo: 'tecla'; tecla: string; esperaMs: number }
+  | { tipo: 'rolar'; dy: number; esperaMs: number }
+  | { tipo: 'esperar'; ms: number }
+  | { tipo: 'navegar'; url: string; esperaMs: number }
+  | { tipo: 'aguardarPdf'; timeoutMs: number };
+
+export type FinalidadeRoteiro = 'CND_FEDERAL' | 'CND_ESTADUAL' | 'OUTRO';
+
+export interface RoteiroRpa {
+  id: string;
+  nome: string;
+  finalidade: FinalidadeRoteiro;
+  uf?: string;
+  urlInicial: string;
+  passos: PassoRpa[];
+  criadoEm: string;
+  atualizadoEm: string;
+}

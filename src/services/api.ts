@@ -6,6 +6,8 @@ import {
   JobMei,
   SituacaoDeclaracao,
   StatusSistema,
+  RoteiroRpa,
+  PassoRpa,
 } from '../types/cnpj';
 import { cleanCNPJ } from '../utils/formatters';
 
@@ -201,4 +203,56 @@ export async function fetchSeleniumScript(options: { cnpj: string; cndUrl?: stri
   });
   if (!response.ok) throw new Error('Falha ao gerar o script');
   return (await response.json()).script;
+}
+
+// RPA gravável
+async function jsonOuErro<T>(res: Response, padrao: string): Promise<T> {
+  if (!res.ok) throw await lerErro(res, padrao);
+  return res.json();
+}
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+export const rpa = {
+  listar: async () => jsonOuErro<RoteiroRpa[]>(await fetch('/api/rpa/roteiros'), 'Falha ao listar roteiros'),
+  salvar: async (roteiro: Partial<RoteiroRpa>) =>
+    jsonOuErro<RoteiroRpa>(
+      await fetch(roteiro.id ? `/api/rpa/roteiros/${roteiro.id}` : '/api/rpa/roteiros', {
+        method: roteiro.id ? 'PUT' : 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(roteiro),
+      }),
+      'Falha ao salvar o roteiro',
+    ),
+  excluir: async (id: string) => jsonOuErro(await fetch(`/api/rpa/roteiros/${id}`, { method: 'DELETE' }), 'Falha ao excluir'),
+  executar: async (id: string, cnpj: string) =>
+    (
+      await jsonOuErro<{ jobId: string }>(
+        await fetch(`/api/rpa/roteiros/${id}/executar`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ cnpj }) }),
+        'Falha ao executar o roteiro',
+      )
+    ).jobId,
+  abrirSessao: async (dados: { url: string; cnpjExemplo?: string; passosIniciais?: PassoRpa[] }) =>
+    jsonOuErro<{ id: string; passos: PassoRpa[]; variaveis: Record<string, string> }>(
+      await fetch('/api/rpa/sessoes', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(dados) }),
+      'Falha ao abrir o navegador',
+    ),
+  acao: async (id: string, acao: Record<string, unknown>) =>
+    jsonOuErro<{ passos: PassoRpa[] }>(
+      await fetch(`/api/rpa/sessoes/${id}/acao`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(acao) }),
+      'Falha ao executar a ação',
+    ),
+  editarPassos: async (id: string, passos: PassoRpa[]) =>
+    jsonOuErro<{ passos: PassoRpa[] }>(
+      await fetch(`/api/rpa/sessoes/${id}/passos`, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ passos }) }),
+      'Falha ao editar os passos',
+    ),
+  estadoSessao: async (id: string) =>
+    jsonOuErro<{ passos: PassoRpa[]; url: string; pdfCapturado: boolean }>(await fetch(`/api/rpa/sessoes/${id}`), 'Sessão encerrada'),
+  fecharSessao: async (id: string) => fetch(`/api/rpa/sessoes/${id}`, { method: 'DELETE' }).catch(() => undefined),
+};
+
+export async function iniciarEmissaoCnd(cnpj: string, esfera: 'federal' | 'estadual'): Promise<{ jobId: string; roteiro?: string }> {
+  const res = await fetch(`/api/cnd/${cleanCNPJ(cnpj)}/emitir`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ esfera }) });
+  return jsonOuErro(res, 'Falha ao iniciar a emissão da CND');
 }

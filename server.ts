@@ -21,6 +21,17 @@ import {
 import { consultarPgmei, localizarChrome, PgmeiBloqueadoError } from './server/pgmeiScraper';
 import { emitirCndFederal, CndBloqueadaError } from './server/cndScraper';
 import { AjudaHumana, proxyConfigurado, SiteInacessivelError } from './server/navegador';
+import {
+  executarRoteiro,
+  FinalidadeRoteiro,
+  RepositorioRoteiros,
+  RoteiroFalhouError,
+  RoteiroRpa,
+  SessaoGravacao,
+  validarPassos,
+  variaveisDaEmpresa,
+} from './server/rpa';
+import { salvarPrintDiagnostico } from './server/pgmeiScraper';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -358,32 +369,203 @@ app.post('/api/cnd/analyze-pdf', async (req, res) => {
   }
 });
 
-// Emissão da CND federal pelo robô no servidor (em segundo plano).
+const roteiros = new RepositorioRoteiros(DATA_DIR);
+
+// Classifica o PDF (ou a mensagem do portal) e registra na carteira.
+async function concluirCnd(cnpj: string, esfera: 'federal' | 'estadual', robo: { pdf?: Buffer; textoPagina?: string }) {
+  const texto = robo.pdf ? await textoDoPdf(robo.pdf) : robo.textoPagina || '';
+  const fileName = robo.pdf ? salvarPdfCnd(robo.pdf, cnpj, esfera) : 'resposta-do-portal.txt';
+  const classification = classifyCndText(texto, { cnpj });
+  registrarCndNaCarteira(cnpj, esfera, classification.tipo, classification.validade);
+  return {
+    success: true,
+    fileName: fileName || 'certidao.pdf',
+    extractedTextLength: texto.length,
+    sampleText: texto.slice(0, 1500),
+    classification,
+  };
+}
+
+function varsDaEmpresa(cnpj: string) {
+  const empresa = findEmpresa(cnpj);
+  return variaveisDaEmpresa(empresa ? { ...empresa, cnpj } : { cnpj });
+}
+
+// Emissão da CND pelo robô no servidor (em segundo plano). Usa o roteiro
+// gravado em "Robôs (RPA)" quando existir; senão, o robô genérico (só federal).
 app.post('/api/cnd/:cnpj/emitir', (req, res) => {
   const cnpj = sanitizeCnpj(req.params.cnpj);
   if (!isValidCnpj(cnpj)) return res.status(400).json({ error: 'CNPJ inválido.' });
+  const esfera: 'federal' | 'estadual' = req.body?.esfera === 'estadual' ? 'estadual' : 'federal';
+  const uf = findEmpresa(cnpj)?.endereco?.uf;
+  const roteiro = roteiros.paraCnd(esfera, uf);
+  if (!roteiro && esfera === 'estadual') {
+    return res.status(400).json({ error: `Nenhum roteiro gravado para a CND estadual${uf ? ` de ${uf}` : ''}. Grave um em "Robôs (RPA)".` });
+  }
 
   const job = criarJob('cnd', cnpj, async job => {
-    const robo = await emitirCndFederal({
-      cnpj,
-      url: process.env.CND_FEDERAL_URL_TESTE,
-      onProgresso: etapa => Object.assign(job, { etapa }),
-      ajudaHumana: ajudaHumanaDoJob(job),
-    });
-    const texto = robo.pdf ? await textoDoPdf(robo.pdf) : robo.textoPagina || '';
-    const fileName = robo.pdf ? salvarPdfCnd(robo.pdf, cnpj, 'federal') : 'resposta-do-portal.txt';
-    const classification = classifyCndText(texto, { cnpj });
-    registrarCndNaCarteira(cnpj, 'federal', classification.tipo, classification.validade);
-    return {
-      success: true,
-      fileName: fileName || 'certidao.pdf',
-      extractedTextLength: texto.length,
-      sampleText: texto.slice(0, 1500),
-      classification,
-    };
+    const robo = roteiro
+      ? await executarRoteiro(roteiro, varsDaEmpresa(cnpj), {
+          onProgresso: etapa => Object.assign(job, { etapa }),
+          ajudaHumana: ajudaHumanaDoJob(job),
+          salvarPrint: page => salvarPrintDiagnostico(page, 'rpa'),
+        })
+      : await emitirCndFederal({
+          cnpj,
+          url: process.env.CND_FEDERAL_URL_TESTE,
+          onProgresso: etapa => Object.assign(job, { etapa }),
+          ajudaHumana: ajudaHumanaDoJob(job),
+        });
+    return concluirCnd(cnpj, esfera, robo);
   });
 
+  return res.json({ jobId: job.id, roteiro: roteiro?.nome });
+});
+
+// ==========================================
+// RPA gravável — roteiros e sessões de gravação
+// ==========================================
+
+const FINALIDADES: FinalidadeRoteiro[] = ['CND_FEDERAL', 'CND_ESTADUAL', 'OUTRO'];
+
+function dadosRoteiro(body: any): Omit<RoteiroRpa, 'id' | 'criadoEm' | 'atualizadoEm'> {
+  const finalidade = FINALIDADES.includes(body?.finalidade) ? body.finalidade : 'OUTRO';
+  const urlInicial = String(body?.urlInicial || '');
+  if (!/^https?:\/\//i.test(urlInicial)) throw new Error('Informe a URL inicial (http/https).');
+  return {
+    nome: String(body?.nome || '').trim() || 'Roteiro sem nome',
+    finalidade,
+    uf: body?.uf ? String(body.uf).toUpperCase().slice(0, 2) : undefined,
+    urlInicial,
+    passos: validarPassos(body?.passos),
+  };
+}
+
+app.get('/api/rpa/roteiros', (req, res) => res.json(roteiros.listar()));
+
+app.post('/api/rpa/roteiros', (req, res) => {
+  try {
+    return res.json(roteiros.salvar(dadosRoteiro(req.body)));
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/rpa/roteiros/:id', (req, res) => {
+  if (!roteiros.obter(req.params.id)) return res.status(404).json({ error: 'Roteiro não encontrado.' });
+  try {
+    return res.json(roteiros.salvar({ ...dadosRoteiro(req.body), id: req.params.id }));
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/rpa/roteiros/:id', (req, res) => {
+  roteiros.excluir(req.params.id);
+  return res.json({ success: true });
+});
+
+// Testa/executa um roteiro para um CNPJ. CND: classifica e registra na carteira.
+app.post('/api/rpa/roteiros/:id/executar', (req, res) => {
+  const roteiro = roteiros.obter(req.params.id);
+  if (!roteiro) return res.status(404).json({ error: 'Roteiro não encontrado.' });
+  const cnpj = sanitizeCnpj(req.body?.cnpj);
+  if (!isValidCnpj(cnpj)) return res.status(400).json({ error: 'Informe um CNPJ válido para testar.' });
+
+  const job = criarJob('rpa', cnpj, async job => {
+    const robo = await executarRoteiro(roteiro, varsDaEmpresa(cnpj), {
+      onProgresso: etapa => Object.assign(job, { etapa }),
+      ajudaHumana: ajudaHumanaDoJob(job),
+      salvarPrint: page => salvarPrintDiagnostico(page, 'rpa'),
+    });
+    if (roteiro.finalidade !== 'OUTRO') return concluirCnd(cnpj, roteiro.finalidade === 'CND_FEDERAL' ? 'federal' : 'estadual', robo);
+    if (!robo.pdf) return { success: true, fileName: null, sampleText: (robo.textoPagina || '').slice(0, 1500) };
+    const nome = path.basename(`RPA_${roteiro.nome.replace(/[^a-zA-Z0-9]+/g, '_')}_${cnpj}_${Date.now()}.pdf`);
+    fs.writeFileSync(path.join(STORAGE_DIR, 'relatorios', nome), robo.pdf);
+    return { success: true, fileName: nome, sampleText: (await textoDoPdf(robo.pdf)).slice(0, 1500) };
+  });
   return res.json({ jobId: job.id });
+});
+
+const sessoes = new Map<string, SessaoGravacao>();
+// Fecha navegadores de gravação esquecidos abertos.
+setInterval(() => {
+  const limite = Date.now() - 15 * 60_000;
+  for (const [id, sessao] of sessoes) {
+    if (sessao.ultimaAtividade < limite) {
+      sessao.fechar();
+      sessoes.delete(id);
+    }
+  }
+}, 60_000).unref();
+
+function sessaoOu404(req: any, res: any): SessaoGravacao | null {
+  const sessao = sessoes.get(req.params.id);
+  if (!sessao) res.status(404).json({ error: 'Sessão de gravação encerrada. Abra o navegador de novo.' });
+  return sessao || null;
+}
+
+app.post('/api/rpa/sessoes', async (req, res) => {
+  const url = String(req.body?.url || '');
+  if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Informe a URL inicial (http/https).' });
+  if (sessoes.size >= 2) return res.status(429).json({ error: 'Já há duas gravações abertas. Feche uma antes de abrir outra.' });
+  const cnpj = sanitizeCnpj(req.body?.cnpjExemplo || '');
+  try {
+    const sessao = await SessaoGravacao.abrir(
+      url,
+      varsDaEmpresa(cnpj),
+      validarPassos(req.body?.passosIniciais),
+    );
+    sessoes.set(sessao.id, sessao);
+    return res.json({ id: sessao.id, passos: sessao.passos, variaveis: sessao.vars });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Não foi possível abrir o navegador: ' + err.message });
+  }
+});
+
+app.get('/api/rpa/sessoes/:id', async (req, res) => {
+  const sessao = sessaoOu404(req, res);
+  if (!sessao) return;
+  return res.json({ id: sessao.id, passos: sessao.passos, url: sessao.page.url(), pdfCapturado: await sessao.pdfCapturado() });
+});
+
+app.get('/api/rpa/sessoes/:id/tela', async (req, res) => {
+  const sessao = sessaoOu404(req, res);
+  if (!sessao) return;
+  try {
+    res.set('Cache-Control', 'no-store');
+    return res.type('image/jpeg').send(await sessao.tela());
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/rpa/sessoes/:id/acao', async (req, res) => {
+  const sessao = sessaoOu404(req, res);
+  if (!sessao) return;
+  try {
+    await sessao.acao(req.body);
+    return res.json({ passos: sessao.passos });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message, passos: sessao.passos });
+  }
+});
+
+// Edição da lista de passos durante a gravação (apagar, ajustar esperas).
+app.put('/api/rpa/sessoes/:id/passos', (req, res) => {
+  const sessao = sessaoOu404(req, res);
+  if (!sessao) return;
+  sessao.passos = validarPassos(req.body?.passos);
+  return res.json({ passos: sessao.passos });
+});
+
+app.delete('/api/rpa/sessoes/:id', async (req, res) => {
+  const sessao = sessoes.get(req.params.id);
+  if (sessao) {
+    sessoes.delete(sessao.id);
+    await sessao.fechar();
+  }
+  return res.json({ success: true });
 });
 
 // ==========================================
@@ -430,7 +612,7 @@ function recalcular(resultado: ResultadoMei): ResultadoMei {
 
 interface JobRobo {
   id: string;
-  tipo: 'mei' | 'cnd';
+  tipo: 'mei' | 'cnd' | 'rpa';
   cnpj: string;
   status: 'na_fila' | 'executando' | 'aguardando_humano' | 'concluido' | 'erro';
   etapa: string;
@@ -485,7 +667,11 @@ function criarJob(tipo: JobRobo['tipo'], cnpj: string, executar: (job: JobRobo) 
       Object.assign(job, {
         status: 'erro',
         erro: err?.message || 'Falha inesperada no robô.',
-        bloqueado: err instanceof PgmeiBloqueadoError || err instanceof CndBloqueadaError || err instanceof SiteInacessivelError,
+        bloqueado:
+          err instanceof PgmeiBloqueadoError ||
+          err instanceof CndBloqueadaError ||
+          err instanceof SiteInacessivelError ||
+          err instanceof RoteiroFalhouError,
       });
     }
   });

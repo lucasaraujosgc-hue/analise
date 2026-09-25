@@ -185,3 +185,57 @@ export async function aguardarLiberacao(
   if (await concluido().catch(() => false)) return true;
   return opcoes.ajudaHumana ? opcoes.ajudaHumana(page, concluido) : false;
 }
+
+function ehPdf(buf?: Buffer | null): buf is Buffer {
+  return Boolean(buf && buf.subarray(0, 4).toString() === '%PDF');
+}
+
+// Captura qualquer PDF que o portal entregar: resposta HTTP, download ou nova aba.
+export async function capturarPdfs(browser: any, page: any, pastaDownload: string) {
+  let pdf: Buffer | undefined;
+  let urlPdf: string | undefined;
+
+  const aoResponder = async (resp: any) => {
+    const tipo = String(resp.headers()['content-type'] || '').toLowerCase();
+    if (pdf || !resp.ok() || !tipo.includes('pdf')) return;
+    urlPdf = resp.url();
+    try {
+      const buf: Buffer = await resp.buffer();
+      if (ehPdf(buf)) pdf = buf;
+    } catch {
+      // Quando o PDF vira download o corpo não fica disponível: baixamos de novo pela URL.
+    }
+  };
+  page.on('response', aoResponder);
+  browser.on('targetcreated', async (target: any) => {
+    const nova = await target.page().catch(() => null);
+    if (nova) nova.on('response', aoResponder);
+  });
+  const cdp = await browser.target().createCDPSession();
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: pastaDownload });
+
+  return {
+    async obter(): Promise<Buffer | undefined> {
+      if (pdf) return pdf;
+      const baixado = fs.existsSync(pastaDownload) ? fs.readdirSync(pastaDownload).find(f => !f.endsWith('.crdownload')) : undefined;
+      if (baixado) {
+        const buf = fs.readFileSync(`${pastaDownload}/${baixado}`);
+        if (ehPdf(buf)) return (pdf = buf);
+      }
+      if (urlPdf) {
+        const base64: string | null = await page
+          .evaluate(async (u: string) => {
+            const r = await fetch(u, { credentials: 'include' });
+            const bytes = new Uint8Array(await r.arrayBuffer());
+            let bin = '';
+            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return btoa(bin);
+          }, urlPdf)
+          .catch(() => null);
+        const buf = base64 ? Buffer.from(base64, 'base64') : null;
+        if (ehPdf(buf)) return (pdf = buf);
+      }
+      return undefined;
+    },
+  };
+}

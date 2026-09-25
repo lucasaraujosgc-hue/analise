@@ -1,5 +1,5 @@
 import React from 'react';
-import { Printer, Terminal, Database, ArrowLeft, FolderOpen } from 'lucide-react';
+import { Printer, Terminal, Database, ArrowLeft, FolderOpen, Bot } from 'lucide-react';
 import { VirgulaLogo } from './VirgulaLogo';
 
 interface NavbarProps {
@@ -7,6 +7,7 @@ interface NavbarProps {
   onOpenPrint: () => void;
   onOpenStorage: () => void;
   onOpenApiInfo: () => void;
+  onOpenRpa: () => void;
   onBackToPortfolio?: () => void;
   hasEmpresa: boolean;
   selectedCompanyName?: string;
@@ -20,6 +21,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPrint,
   onOpenStorage,
   onOpenApiInfo,
+  onOpenRpa,
   onBackToPortfolio,
   hasEmpresa,
   selectedCompanyName,
@@ -60,6 +62,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button onClick={onOpenStorage} className={botaoSecundario} title="Arquivos salvos (CNDs, extratos e dossiês)">
             <FolderOpen className="w-4 h-4 text-primary" />
             <span className="hidden sm:inline">Arquivos</span>
+          </button>
+          <button onClick={onOpenRpa} className={botaoSecundario} title="Gravar e executar robôs (RPA)">
+            <Bot className="w-4 h-4 text-primary" />
+            <span className="hidden sm:inline">Robôs</span>
           </button>
           <button onClick={onOpenApiInfo} className={botaoSecundario} title="De onde vêm os dados">
             <Database className="w-4 h-4 text-primary" />

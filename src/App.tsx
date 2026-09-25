@@ -13,6 +13,7 @@ import { SeleniumModal } from './components/SeleniumModal';
 import { DossierModal } from './components/DossierModal';
 import { StorageManagerModal } from './components/StorageManagerModal';
 import { ApiInfoModal } from './components/ApiInfoModal';
+import { RpaStudio } from './components/RpaStudio';
 import { VirgulaLogo } from './components/VirgulaLogo';
 import { ArrowLeft, Printer, RefreshCw, Trash2, CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 import { cleanCNPJ } from './utils/formatters';
@@ -30,6 +31,7 @@ export default function App() {
   const [isDossierModalOpen, setIsDossierModalOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
   const [isApiInfoModalOpen, setIsApiInfoModalOpen] = useState(false);
+  const [isRpaOpen, setIsRpaOpen] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -126,6 +128,7 @@ export default function App() {
         onOpenPrint={() => setIsDossierModalOpen(true)}
         onOpenStorage={() => setIsStorageModalOpen(true)}
         onOpenApiInfo={() => setIsApiInfoModalOpen(true)}
+        onOpenRpa={() => setIsRpaOpen(true)}
         onBackToPortfolio={selectedEmpresa ? () => setSelectedEmpresa(null) : undefined}
         hasEmpresa={Boolean(selectedEmpresa)}
         selectedCompanyName={selectedEmpresa?.razao_social}
@@ -252,6 +255,7 @@ export default function App() {
 
       <StorageManagerModal isOpen={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
       <ApiInfoModal isOpen={isApiInfoModalOpen} onClose={() => setIsApiInfoModalOpen(false)} />
+      <RpaStudio isOpen={isRpaOpen} onClose={() => setIsRpaOpen(false)} empresa={selectedEmpresa} onExecutado={loadPortfolio} />
 
       {toast && (
         <div className="fixed top-20 right-5 z-50 max-w-sm w-[calc(100%-2.5rem)]" role="status">
