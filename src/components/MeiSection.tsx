@@ -10,6 +10,7 @@ import {
   savePdfToStorage,
 } from '../services/api';
 import { DASN_SIMEI_URL, PGMEI_URL } from '../data/cndLinks';
+import { CaptchaRemoto } from './CaptchaRemoto';
 import { formatCNPJ, formatCurrency } from '../utils/formatters';
 import {
   AlertCircle, AlertTriangle, CheckCircle2, ClipboardCopy, ExternalLink, FileWarning, HardDrive,
@@ -292,6 +293,7 @@ export const MeiSection: React.FC<MeiSectionProps> = ({ empresa, isMei, setIsMei
               />
             </div>
             <p className="text-[11px] text-muted-foreground">O robô navega no PGMEI como uma pessoa faria; costuma levar de 30 s a 2 min.</p>
+            {job.status === 'aguardando_humano' && <CaptchaRemoto jobId={job.id} />}
           </div>
         )}
 

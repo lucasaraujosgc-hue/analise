@@ -40,7 +40,7 @@ function telaEmissao(ano?: string) {
     </form>${conteudo}`);
 }
 
-export function servidorSimulado() {
+export function servidorSimulado(opcoes: { desafioCaptcha?: boolean } = {}) {
   const app = express();
   app.use(express.urlencoded({ extended: true }));
   const cnpjsRecebidos: string[] = [];
@@ -48,8 +48,12 @@ export function servidorSimulado() {
   app.get(`${PGMEI}/Identificacao`, (req, res) => res.send(identificacao(`${PGMEI}/Identificacao`)));
   app.post(`${PGMEI}/Identificacao`, (req, res) => {
     cnpjsRecebidos.push(req.body.cnpj);
-    res.redirect(`${PGMEI}/`);
+    if (!opcoes.desafioCaptcha) return res.redirect(`${PGMEI}/`);
+    // Continua na identificação com um "desafio" grande do hCaptcha na tela.
+    res.send(pagina(`<iframe src="/hcaptcha-desafio" title="hCaptcha challenge" style="width:400px;height:500px"></iframe>
+      <button id="resolver" onclick="location.href='${PGMEI}/'">Verificar</button>`));
   });
+  app.get('/hcaptcha-desafio', (req, res) => res.send('<p>Selecione as imagens</p>'));
   app.get(`${PGMEI}/`, (req, res) => res.send(pagina(`<a href="${PGMEI}/emissao">Emitir Guia de Pagamento (DAS)</a>`)));
   app.get(`${PGMEI}/emissao`, (req, res) => res.send(telaEmissao()));
   app.post(`${PGMEI}/emissao`, (req, res) => res.send(telaEmissao(req.body.ano)));

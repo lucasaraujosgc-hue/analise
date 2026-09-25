@@ -20,7 +20,7 @@ import {
 } from './server/mei';
 import { consultarPgmei, localizarChrome, PgmeiBloqueadoError } from './server/pgmeiScraper';
 import { emitirCndFederal, CndBloqueadaError } from './server/cndScraper';
-import { proxyConfigurado, SiteInacessivelError } from './server/navegador';
+import { AjudaHumana, proxyConfigurado, SiteInacessivelError } from './server/navegador';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -368,6 +368,7 @@ app.post('/api/cnd/:cnpj/emitir', (req, res) => {
       cnpj,
       url: process.env.CND_FEDERAL_URL_TESTE,
       onProgresso: etapa => Object.assign(job, { etapa }),
+      ajudaHumana: ajudaHumanaDoJob(job),
     });
     const texto = robo.pdf ? await textoDoPdf(robo.pdf) : robo.textoPagina || '';
     const fileName = robo.pdf ? salvarPdfCnd(robo.pdf, cnpj, 'federal') : 'resposta-do-portal.txt';
@@ -431,7 +432,7 @@ interface JobRobo {
   id: string;
   tipo: 'mei' | 'cnd';
   cnpj: string;
-  status: 'na_fila' | 'executando' | 'concluido' | 'erro';
+  status: 'na_fila' | 'executando' | 'aguardando_humano' | 'concluido' | 'erro';
   etapa: string;
   atual: number;
   total: number;
@@ -442,6 +443,26 @@ interface JobRobo {
 }
 
 const jobs = new Map<string, JobRobo>();
+// Página do robô aguardando a pessoa resolver um captcha (por id do job).
+const telasAguardando = new Map<string, any>();
+
+function ajudaHumanaDoJob(job: JobRobo): AjudaHumana {
+  return async (page, concluido) => {
+    telasAguardando.set(job.id, page);
+    Object.assign(job, { status: 'aguardando_humano', etapa: 'A Receita pediu uma verificação: resolva o captcha na tela abaixo.' });
+    const limite = Date.now() + 4 * 60_000;
+    try {
+      while (Date.now() < limite) {
+        if (await concluido().catch(() => false)) return true;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      return false;
+    } finally {
+      telasAguardando.delete(job.id);
+      Object.assign(job, { status: 'executando', etapa: 'Continuando a consulta...' });
+    }
+  };
+}
 // Um robô por vez: evita abrir vários navegadores e não sobrecarrega os portais.
 let filaRobos: Promise<void> = Promise.resolve();
 
@@ -490,6 +511,30 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// Tela atual do robô (JPEG) enquanto aguarda a pessoa resolver o captcha.
+app.get('/api/jobs/:id/tela', async (req, res) => {
+  const page = telasAguardando.get(req.params.id);
+  if (!page) return res.status(404).json({ error: 'Nenhuma verificação aguardando.' });
+  try {
+    const img = await page.screenshot({ type: 'jpeg', quality: 70 });
+    res.set('Cache-Control', 'no-store');
+    return res.type('image/jpeg').send(Buffer.from(img));
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Repassa o clique da pessoa para a tela do robô (coordenadas da janela 1366x768).
+app.post('/api/jobs/:id/clique', async (req, res) => {
+  const page = telasAguardando.get(req.params.id);
+  if (!page) return res.status(404).json({ error: 'Nenhuma verificação aguardando.' });
+  const x = Number(req.body?.x);
+  const y = Number(req.body?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: 'Coordenadas inválidas.' });
+  await page.mouse.click(x, y).catch(() => {});
+  return res.json({ ok: true });
+});
+
 app.get(['/api/jobs/:id', '/api/mei/jobs/:id'], (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Consulta não encontrada (pode ter expirado).' });
@@ -517,6 +562,7 @@ app.post('/api/mei/:cnpj/consultar', async (req, res) => {
       maxAnos,
       verificarDasn,
       baseUrl: process.env.PGMEI_BASE_URL,
+      ajudaHumana: ajudaHumanaDoJob(job),
       onProgresso: (etapa, atual, total) => Object.assign(job, { etapa, atual, total }),
     });
 

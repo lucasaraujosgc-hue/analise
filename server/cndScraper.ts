@@ -8,7 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { abrirNavegador, abrirUrl } from './navegador';
+import { abrirNavegador, abrirUrl, AjudaHumana, desafioCaptchaVisivel } from './navegador';
 import { CND_FEDERAL_URL } from './cnd';
 import { salvarPrintDiagnostico } from './pgmeiScraper';
 
@@ -65,6 +65,7 @@ export async function emitirCndFederal(opcoes: {
   headless?: boolean;
   timeoutMs?: number;
   onProgresso?: (etapa: string) => void;
+  ajudaHumana?: AjudaHumana;
 }): Promise<ResultadoRoboCnd> {
   const progresso = opcoes.onProgresso || (() => {});
   const pastaDownload = fs.mkdtempSync(path.join(os.tmpdir(), 'cnd-'));
@@ -116,7 +117,7 @@ export async function emitirCndFederal(opcoes: {
     else clicados.add(primeiro);
 
     progresso('Aguardando a emissão da certidão...');
-    const limite = Date.now() + (opcoes.timeoutMs ?? 90_000);
+    let limite = Date.now() + (opcoes.timeoutMs ?? 90_000);
     while (!pdf && Date.now() < limite) {
       await esperar(1500);
 
@@ -148,11 +149,17 @@ export async function emitirCndFederal(opcoes: {
       const texto: string = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (/insuficientes para a emiss[aã]o/i.test(texto)) return { textoPagina: texto };
 
-      const captcha = await page.$('iframe[src*="hcaptcha"], iframe[src*="recaptcha"], iframe[title*="captcha" i]');
-      if (captcha && (await captcha.boundingBox())) {
-        throw new CndBloqueadaError(
-          'O portal pediu verificação de captcha e o robô não pode resolvê-la. Emita pelo link oficial e envie o PDF, ou use o script de emissão assistida.',
-        );
+      if (await desafioCaptchaVisivel(page)) {
+        const liberou = opcoes.ajudaHumana
+          ? await opcoes.ajudaHumana(page, async () => !(await desafioCaptchaVisivel(page)))
+          : false;
+        if (!liberou) {
+          throw new CndBloqueadaError(
+            'O portal pediu verificação de captcha e ela não foi resolvida. Emita pelo link oficial e envie o PDF, ou tente de novo.',
+          );
+        }
+        limite = Math.max(limite, Date.now() + 60_000);
+        continue;
       }
 
       // Passos seguintes do portal: emitir nova certidão, segunda via, baixar/imprimir.

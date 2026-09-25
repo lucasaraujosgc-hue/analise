@@ -167,7 +167,7 @@ export interface ResultadoMei {
 export interface JobMei {
   id: string;
   cnpj: string;
-  status: 'na_fila' | 'executando' | 'concluido' | 'erro';
+  status: 'na_fila' | 'executando' | 'aguardando_humano' | 'concluido' | 'erro';
   etapa: string;
   atual: number;
   total: number;

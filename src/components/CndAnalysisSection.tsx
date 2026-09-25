@@ -4,6 +4,7 @@ import { analyzeCndPdf, fetchJob, iniciarEmissaoCndFederal, updatePendenciasInCa
 import { SAMPLE_CND_TEXTS } from '../data/mockCompanies';
 import { CND_ESTADUAL, CND_FEDERAL, OUTRAS_CERTIDOES } from '../data/cndLinks';
 import { formatCNPJ } from '../utils/formatters';
+import { CaptchaRemoto } from './CaptchaRemoto';
 import {
   FileText, CheckCircle, AlertTriangle, XCircle, Loader2, Calendar, Key, HelpCircle,
   FileCheck, Terminal, ExternalLink, Copy, Check, ChevronDown, Server,
@@ -35,6 +36,7 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
   const [mostrarExemplos, setMostrarExemplos] = useState(false);
   const [copiado, setCopiado] = useState(false);
   const [roboEtapa, setRoboEtapa] = useState<string | null>(null);
+  const [captchaJobId, setCaptchaJobId] = useState<string | null>(null);
 
   const uf = empresa.endereco.uf;
   const estadual = uf ? CND_ESTADUAL[uf] : undefined;
@@ -95,12 +97,14 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
           setErro(job.erro || 'O robô não conseguiu emitir a certidão.');
           break;
         }
+        setCaptchaJobId(job.status === 'aguardando_humano' ? jobId : null);
         setRoboEtapa(job.status === 'na_fila' ? 'Na fila (um robô por vez)...' : job.etapa);
       }
     } catch (err: any) {
       setErro(err.message);
     } finally {
       setRoboEtapa(null);
+      setCaptchaJobId(null);
     }
   };
 
@@ -215,6 +219,8 @@ export const CndAnalysisSection: React.FC<CndAnalysisSectionProps> = ({ empresa,
               {roboEtapa || 'Buscar CND automaticamente (robô no servidor)'}
             </button>
           )}
+
+          {captchaJobId && <CaptchaRemoto jobId={captchaJobId} />}
 
           {esfera === 'federal' && (
             <button

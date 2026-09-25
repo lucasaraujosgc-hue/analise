@@ -9,7 +9,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { abrirNavegador, abrirUrl, localizarChrome, TIMEOUT_NAV } from './navegador';
+import { aguardarLiberacao, AjudaHumana, abrirNavegador, abrirUrl, localizarChrome, TIMEOUT_NAV } from './navegador';
 import {
   CompetenciaMei,
   anosDasnExigiveis,
@@ -39,6 +39,8 @@ export interface OpcoesConsultaPgmei {
   verificarDasn?: boolean;
   headless?: boolean;
   telaVirtual?: boolean;
+  // Mostra a tela do robô no sistema para a pessoa resolver um captcha.
+  ajudaHumana?: AjudaHumana;
   // Com navegador visível, tempo para a pessoa resolver o captcha, se aparecer.
   esperaCaptchaMs?: number;
   baseUrl?: string;
@@ -129,30 +131,17 @@ async function identificar(page: any, url: string, cnpj: string, opcoes: OpcoesC
   await digitarHumano(page, 'input[id=cnpj]', cnpj);
   await cliqueHumano(page, 'button[type=submit]');
 
-  await Promise.race([
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }),
-    page.waitForSelector('#toast-container .toast-message, .alert', { timeout: 15_000, visible: true }),
-  ]).catch(() => {});
-
-  if (!/identificacao/i.test(page.url())) return;
+  // O hCaptcha invisível pode levar vários segundos (botão girando). Esperamos sem
+  // clicar de novo; se ele pedir um desafio, a tela vai para a pessoa resolver.
+  const saiu = () => Promise.resolve(!/identificacao/i.test(page.url()));
+  opcoes.onProgresso?.('Aguardando a verificação de segurança do portal...', 0, 0);
+  const prazo = opcoes.headless === false && !opcoes.telaVirtual ? opcoes.esperaCaptchaMs ?? 180_000 : 60_000;
+  if (await aguardarLiberacao(page, saiu, { prazoMs: prazo, ajudaHumana: opcoes.ajudaHumana })) {
+    await page.waitForSelector('a, table, select', { timeout: 15_000 }).catch(() => {});
+    return;
+  }
 
   const mensagens = await lerMensagens(page);
-  // Janela visível: dá tempo para a pessoa resolver o captcha. Em tela virtual
-  // ninguém vê a janela, então só espera a verificação invisível terminar.
-  if (opcoes.headless === false) {
-    opcoes.onProgresso?.(
-      opcoes.telaVirtual ? 'Aguardando a verificação de segurança do portal...' : 'Resolva o captcha no navegador aberto...',
-      0,
-      0,
-    );
-    const prazo = opcoes.telaVirtual ? 25_000 : opcoes.esperaCaptchaMs ?? 180_000;
-    // Reenvia uma vez: o captcha invisível às vezes só libera na segunda tentativa.
-    if (opcoes.telaVirtual) await cliqueHumano(page, 'button[type=submit]').catch(() => {});
-    if (await aguardarSaidaDaIdentificacao(page, prazo)) {
-      await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
-      return;
-    }
-  }
   const detalhe = mensagens.join(' ') || 'o portal não saiu da tela de identificação';
   const print = await salvarPrintDiagnostico(page, 'pgmei');
   throw new PgmeiBloqueadoError(

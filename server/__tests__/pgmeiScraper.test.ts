@@ -41,3 +41,36 @@ test('robô lê competências em aberto e DASN pendente no PGMEI simulado', { sk
     server.close();
   }
 });
+
+test('quando aparece desafio de captcha, a tela vai para a pessoa e o robô continua', { skip: !localizarChrome(), timeout: 180_000 }, async () => {
+  const { app } = servidorSimulado({ desafioCaptcha: true });
+  const server = app.listen(0);
+  const { port } = server.address() as AddressInfo;
+  let pediuAjuda = 0;
+
+  try {
+    const resultado = await consultarPgmei({
+      cnpj: '34058193000153',
+      dataOpcaoMei: '2023-01-01',
+      baseUrl: `http://127.0.0.1:${port}`,
+      hoje: new Date(2026, 8, 15),
+      maxAnos: 1,
+      verificarDasn: false,
+      // Simula a pessoa clicando na tela exibida no sistema.
+      ajudaHumana: async (page, concluido) => {
+        pediuAjuda++;
+        const box = await (await page.$('#resolver')).boundingBox();
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        for (let i = 0; i < 20; i++) {
+          if (await concluido()) return true;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        return false;
+      },
+    });
+    assert.equal(pediuAjuda, 1);
+    assert.ok(resultado.competencias.some(c => c.periodoApuracao === '202602'));
+  } finally {
+    server.close();
+  }
+});

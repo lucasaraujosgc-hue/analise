@@ -152,3 +152,36 @@ export async function abrirUrl(page: any, url: string, tentativas = 2) {
     `O servidor não conseguiu abrir ${host} em ${TIMEOUT_NAV / 1000}s (${(ultimoErro as Error)?.message || 'sem resposta'}). ${dica}`,
   );
 }
+
+// Ajuda humana: quando o portal mostra um desafio de captcha, a tela do robô é
+// exibida no sistema e a pessoa resolve com o mouse. Resolve true se liberou.
+export type AjudaHumana = (page: any, concluido: () => Promise<boolean>) => Promise<boolean>;
+
+const pausa = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// O widget do hCaptcha é pequeno; o desafio (grade de imagens) é um iframe grande.
+export async function desafioCaptchaVisivel(page: any): Promise<boolean> {
+  const frames = await page.$$('iframe[src*="hcaptcha"], iframe[src*="recaptcha"], iframe[title*="captcha" i]').catch(() => []);
+  for (const f of frames) {
+    const box = await f.boundingBox().catch(() => null);
+    if (box && box.width > 200 && box.height > 200) return true;
+  }
+  return false;
+}
+
+// Espera a verificação do portal liberar. Não clica de novo: reenviar reinicia
+// o hCaptcha. Se aparecer um desafio (ou o prazo acabar), chama a ajuda humana.
+export async function aguardarLiberacao(
+  page: any,
+  concluido: () => Promise<boolean>,
+  opcoes: { prazoMs: number; ajudaHumana?: AjudaHumana },
+): Promise<boolean> {
+  const limite = Date.now() + opcoes.prazoMs;
+  while (Date.now() < limite) {
+    if (await concluido().catch(() => false)) return true;
+    if (opcoes.ajudaHumana && (await desafioCaptchaVisivel(page))) return opcoes.ajudaHumana(page, concluido);
+    await pausa(1000);
+  }
+  if (await concluido().catch(() => false)) return true;
+  return opcoes.ajudaHumana ? opcoes.ajudaHumana(page, concluido) : false;
+}
